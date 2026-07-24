@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "a2b-lightvpr"
+version = "0.1.0"
+description = "Single-direction day-to-night generation for lightweight VPR training"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "Pillow>=9.5",
+  "PyYAML>=6.0",
+  "scipy>=1.10",
+  "torch>=2.1",
+  "torchvision>=0.16",
+  "tqdm>=4.65",
+]
+
+[project.optional-dependencies]
+eval = [
+  "faiss-cpu>=1.7.4",
+  "pytorch-fid>=0.3.0",
+  "scikit-image>=0.21",
+]
+test = ["pytest>=7.4"]
+tracking = ["wandb>=0.16"]
+
+[project.scripts]
+a2b-lightvpr = "a2b_lightvpr.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

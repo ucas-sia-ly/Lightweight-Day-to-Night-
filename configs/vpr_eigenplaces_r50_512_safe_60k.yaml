@@ -1,0 +1,50 @@
+data:
+  robotcar_manifest: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/manifest.csv
+  robotcar_protocol: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/protocol.json
+  generator_manifest: data/manifests_clean_night/generator_train.csv
+  vpr_source_manifest: data/manifests_clean_night/vpr_train.csv
+  generated_root: data/generated/multidataset_qsattn_clean_night_150k
+  tokyo_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/tokyo247
+  svox_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/svox
+  msls_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/MSLS
+vpr:
+  output_dir: runs/vpr/three_safe/eigenplaces_r50_512_320x480_seed0
+  model_family: eigenplaces
+  backbone: resnet50
+  aggregator: gem
+  descriptor_dim: 512
+  image_height: 320
+  image_width: 480
+  loss_profile: v2
+  train_domains: day_fake
+  cross_domain_aux: preserve_day
+  preservation_teacher: initialization
+  preservation_target: 0.95
+  preservation_weight: 1.0
+  epochs: 20
+  batch_size: 8
+  gradient_accumulation_steps: 2
+  workers: 4
+  backbone_lr: 0.000001
+  aggregator_lr: 0.000001
+  classifier_lr: 0.0001
+  classifier_warmup_lr: 0.001
+  classifier_warmup_epochs: 1
+  freeze_batch_norm: true
+  evaluate_epoch_zero: true
+  early_stopping: false
+  epoch_one_max_recall_drop: 0.02
+  init_checkpoint: eigenplaces://resnet50
+  init_checkpoint_scope: full
+  datasets: [msls, robotcar, svox]
+  min_class_images_by_dataset: {msls: 4, robotcar: 2, svox: 2}
+  sampler: rolling_balanced
+  dataset_epoch_quotas: {msls: 20000, robotcar: 20000, svox: 20000}
+  samples_per_epoch: 60000
+  scheduler: cosine
+  scheduler_min_lr_ratio: 0.01
+tracking:
+  enabled: true
+  project: a2b-lightvpr
+  group: vpr-safe-adaptation-60k
+  tags: [eigenplaces, r50, 512d, safe-adaptation, 60k]

@@ -1,0 +1,58 @@
+data:
+  robotcar_manifest: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/manifest.csv
+  robotcar_protocol: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/protocol.json
+  generator_manifest: data/manifests_clean_night/generator_train.csv
+  vpr_source_manifest: data/manifests_clean_night/vpr_train.csv
+  generated_root: data/generated/multidataset_qsattn_clean_night_150k
+  tokyo_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/tokyo247
+  svox_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/svox
+  msls_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/MSLS
+
+vpr:
+  output_dir: runs/reference/nocplace_protocol_clean5k
+  backbone: resnet50
+  aggregator: gem
+  descriptor_dim: 512
+  image_height: 320
+  image_width: 480
+  workers: 4
+
+nocplace_repro:
+  negcut_repo: /home/admin123/diffusion_vpr_test/reference_code/NEGCUT
+  nocplace_repo: /home/admin123/diffusion_vpr_test/NocPlace
+  cosplace_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/CosPlace/resnet50_512.pth
+  data_root: data/nocplace_repro
+  negcut_name: a2b_nocplace_5k
+  negcut_checkpoints_dir: /home/admin123/diffusion_vpr_test/reference_code/NEGCUT/checkpoints
+  generated_root: data/generated/nocplace_negcut_official_5k
+  output_dir: runs/reference/nocplace_protocol_clean5k
+  samples_per_dataset_domain: 500
+  seed: 0
+  load_size: 640
+  crop_size: 512
+  negcut_epochs: 200
+  negcut_decay_epochs: 200
+  negcut_batch_size: 1
+  negcut_lr: 0.0002
+  translation_batch_size: 4
+  vpr_batch_size: 32
+  vpr_iterations: 10000
+  model_lr: 0.000001
+  classifier_lr: 0.01
+  ikt_temperature: 4.0
+  ikt_weight: 30.0
+  workers: 4
+
+evaluation:
+  positive_radius_m: 10.0
+  positive_yaw_deg: 30.0
+  recalls: [1, 5, 10]
+  bootstrap_samples: 10000
+  datasets: [robotcar, svox_night, msls_night, tokyo_night, tokyo_sunset]
+
+tracking:
+  enabled: true
+  project: a2b-lightvpr
+  group: nocplace-protocol-clean5k-local
+  name: nocplace-r50-ikt-clean5k
+  tags: [nocplace, negcut-official, substitute-data, ikt, r50, 512d]
