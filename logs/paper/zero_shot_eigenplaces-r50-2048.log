@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/home/admin123/miniconda3/envs/img2img-turbo/bin/a2b-lightvpr", line 6, in <module>
+    sys.exit(main())
+  File "/home/admin123/diffusion_vpr_test/A2B-LightVPR/src/a2b_lightvpr/cli.py", line 217, in main
+    print(evaluate_reference_suite(
+  File "/home/admin123/diffusion_vpr_test/A2B-LightVPR/src/a2b_lightvpr/reference_suite.py", line 67, in evaluate_reference_suite
+    query_checkpoint = Path(spec.get("_resolved_checkpoint", spec["checkpoint"]))
+KeyError: 'checkpoint'

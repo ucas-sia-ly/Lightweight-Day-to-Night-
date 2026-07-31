@@ -25,6 +25,11 @@ eval = [
 ]
 test = ["pytest>=7.4"]
 tracking = ["wandb>=0.16"]
+export = [
+  "onnx>=1.16",
+  "onnxruntime>=1.18",
+  "onnxscript>=0.1",
+]
 
 [project.scripts]
 a2b-lightvpr = "a2b_lightvpr.cli:main"

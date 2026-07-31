@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import re
 import statistics
 import time
 from pathlib import Path
@@ -127,9 +128,26 @@ def _load_generator(checkpoint: Path, device: torch.device, config: ExperimentCo
             "kind": "official_negcut_generator",
             "step": int(epoch) * 5000 if epoch.isdigit() else 0,
         }
-    state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    checkpoint = checkpoint.resolve()
+    training_checkpoint_dir = (Path(config.generator.output_dir) / "checkpoints").resolve()
+    is_project_training_state = (
+        checkpoint.parent == training_checkpoint_dir
+        and re.fullmatch(r"state_\d{7}\.pt", checkpoint.name) is not None
+    )
+    # Project training states contain NumPy/Python RNG state, which cannot be
+    # decoded by PyTorch 2.6's weights-only unpickler. Full unpickling is only
+    # permitted for the project's own, conventionally named checkpoint path.
+    state = torch.load(
+        checkpoint,
+        map_location="cpu",
+        weights_only=not is_project_training_state,
+    )
+    if not isinstance(state, dict):
+        raise ValueError("Generator checkpoint must contain a state dictionary")
     if state.get("kind") not in {"generator_inference", "generator_training_state"}:
         raise ValueError("Expected a generator inference or training-state checkpoint")
+    if not isinstance(state.get("generator"), dict):
+        raise ValueError("Generator checkpoint is missing the generator state dictionary")
     model = ResnetGenerator()
     model.load_state_dict(state["generator"], strict=True)
     return model.eval().requires_grad_(False).to(device), state

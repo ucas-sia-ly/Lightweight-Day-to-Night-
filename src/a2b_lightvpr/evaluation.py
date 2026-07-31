@@ -76,6 +76,7 @@ def retrieval_metrics(
         "mrr": float(reciprocal[valid].mean()),
         "valid_queries": int(valid.sum()),
         "total_queries": len(positives),
+        "valid_by_query": valid.astype(np.uint8).tolist(),
         "success_by_k": success_by_k,
     }
 
@@ -104,6 +105,24 @@ def paired_bootstrap(
         "significant": bool(lower > 0.0),
         "samples": int(samples),
     }
+
+
+def acceptance_against_baseline(
+    candidate_success: list[int], baseline_success: list[int], samples: int
+) -> tuple[dict, dict]:
+    bootstrap = paired_bootstrap(candidate_success, baseline_success, samples)
+    candidate_recall1 = float(np.mean(candidate_success))
+    baseline_recall1 = float(np.mean(baseline_success))
+    acceptance = {
+        "baseline_recall1": baseline_recall1,
+        "recall1_above_baseline": bool(candidate_recall1 > baseline_recall1),
+        "ci95_lower_above_zero": bool(bootstrap["ci95"][0] > 0.0),
+    }
+    acceptance["passed"] = bool(
+        acceptance["recall1_above_baseline"]
+        and acceptance["ci95_lower_above_zero"]
+    )
+    return bootstrap, acceptance
 
 
 def extract_descriptors(model, rows, transform, device, batch_size=64, workers=4):
@@ -150,23 +169,29 @@ def evaluate_model(
         import json
 
         baseline = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
-        bootstrap = paired_bootstrap(
-            metrics["success_by_k"]["1"],
-            baseline["success_by_k"]["1"],
+        expected_protocol = {
+            "split": split,
+            "positive_radius_m": evaluation.positive_radius_m,
+            "positive_yaw_deg": evaluation.positive_yaw_deg,
+            "total_queries": metrics["total_queries"],
+        }
+        mismatches = {
+            key: (baseline.get(key), value)
+            for key, value in expected_protocol.items()
+            if baseline.get(key) != value
+        }
+        if mismatches:
+            raise ValueError(f"Baseline protocol does not match candidate: {mismatches}")
+        valid = np.asarray(metrics["valid_by_query"], dtype=bool)
+        candidate_success = np.asarray(metrics["success_by_k"]["1"])[valid].tolist()
+        baseline_success = np.asarray(baseline["success_by_k"]["1"])[valid].tolist()
+        bootstrap, acceptance = acceptance_against_baseline(
+            candidate_success,
+            baseline_success,
             evaluation.bootstrap_samples,
         )
         metrics["paired_bootstrap_r1"] = bootstrap
-        metrics["acceptance"] = {
-            "baseline_recall1": evaluation.baseline_recall1,
-            "recall1_above_baseline": bool(
-                metrics["recalls"]["1"] > evaluation.baseline_recall1
-            ),
-            "ci95_lower_above_zero": bool(bootstrap["ci95"][0] > 0.0),
-            "passed": bool(
-                metrics["recalls"]["1"] > evaluation.baseline_recall1
-                and bootstrap["ci95"][0] > 0.0
-            ),
-        }
+        metrics["acceptance"] = acceptance
     if output_path:
         write_json(metrics, output_path)
     return metrics

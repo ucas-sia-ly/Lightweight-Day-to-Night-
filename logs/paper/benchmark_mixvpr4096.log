@@ -1,0 +1,54 @@
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/admin123/.netrc.
+wandb: Currently logged in as: ucas-sia-ly (ucas-sia-ly-shenyang-institute-of-automation-chinese-aca) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run 6ce997390db21a49
+wandb: Tracking run with wandb version 0.25.1
+wandb: Run data is saved locally in /home/admin123/diffusion_vpr_test/A2B-LightVPR/runs/vpr/three_safe/mixvpr_r50_4096_320x320_seed0/wandb/run-20260727_152556-6ce997390db21a49
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run benchmark-resnet50-mixvpr-320x320
+wandb: ⭐️ View project at https://wandb.ai/ucas-sia-ly-shenyang-institute-of-automation-chinese-aca/a2b-lightvpr
+wandb: 🚀 View run at https://wandb.ai/ucas-sia-ly-shenyang-institute-of-automation-chinese-aca/a2b-lightvpr/runs/6ce997390db21a49
+wandb: updating run metadata; uploading summary
+wandb: uploading summary
+wandb: uploading wandb-metadata.json; uploading requirements.txt; uploading wandb-summary.json; uploading config.yaml
+wandb: uploading summary
+wandb: 
+wandb: Run summary:
+wandb:                 benchmark/aggregator mixvpr
+wandb:                 benchmark/checkpoint runs/vpr/three_safe_...
+wandb:             benchmark/descriptor_dim 4096
+wandb:                     benchmark/device cuda
+wandb:                    benchmark/encoder resnet50
+wandb:         benchmark/fp16_parameter_mib 20.75367
+wandb:                 benchmark/parameters 10880900
+wandb: benchmark/passes_1_5gib_memory_proxy True
+wandb:          benchmark/passes_30ms_proxy True
+wandb:    benchmark/passes_deployment_proxy True
+wandb:                                   +2 ...
+wandb: 
+wandb: 🚀 View run benchmark-resnet50-mixvpr-320x320 at: https://wandb.ai/ucas-sia-ly-shenyang-institute-of-automation-chinese-aca/a2b-lightvpr/runs/6ce997390db21a49
+wandb: ⭐️ View project at: https://wandb.ai/ucas-sia-ly-shenyang-institute-of-automation-chinese-aca/a2b-lightvpr
+wandb: Synced 4 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./runs/vpr/three_safe/mixvpr_r50_4096_320x320_seed0/wandb/run-20260727_152556-6ce997390db21a49/logs
+{
+  "aggregator": "mixvpr",
+  "checkpoint": "runs/vpr/three_safe_rerun/mixvpr_r50_4096_320x320_seed0/model_best.pt",
+  "descriptor_dim": 4096,
+  "device": "cuda",
+  "encoder": "resnet50",
+  "fp16_parameter_mib": 20.75366973876953,
+  "image_size": [
+    320,
+    320
+  ],
+  "latency_ms": {
+    "mean": 1.7599369132658467,
+    "p50": 1.6856095171533525,
+    "p95": 1.9204131152946493
+  },
+  "parameters": 10880900,
+  "passes_1_5gib_memory_proxy": true,
+  "passes_30ms_proxy": true,
+  "passes_deployment_proxy": true,
+  "peak_cuda_mib": 77.13330078125,
+  "process_peak_rss_mib": 1346.17578125
+}

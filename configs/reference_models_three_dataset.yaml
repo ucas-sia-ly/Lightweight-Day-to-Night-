@@ -8,7 +8,6 @@ data:
   svox_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/svox
   msls_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/MSLS
 vpr:
-  backbone: efficientnet_b0
   descriptor_dim: 512
   image_height: 320
   image_width: 480

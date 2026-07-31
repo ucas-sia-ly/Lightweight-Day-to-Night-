@@ -10,7 +10,6 @@ data:
 
 vpr:
   output_dir: runs/reference/nocplace_protocol_clean5k
-  backbone: resnet50
   aggregator: gem
   descriptor_dim: 512
   image_height: 320

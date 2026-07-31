@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import resource
 import statistics
 import time
@@ -15,6 +16,17 @@ from .tracking import TrainingTracker
 from .vpr.model import build_descriptor_model
 
 
+def _require_onnx_dependencies() -> None:
+    required = ("onnx", "onnxscript", "onnxruntime")
+    missing = [name for name in required if importlib.util.find_spec(name) is None]
+    if missing:
+        packages = ", ".join(missing)
+        raise ModuleNotFoundError(
+            f"ONNX export dependencies are missing: {packages}. "
+            "Install them with: pip install -e '.[export]'"
+        )
+
+
 def load_vpr_model(config: ExperimentConfig, checkpoint: str | Path | None = None):
     cfg = config.vpr
     checkpoint = Path(checkpoint or Path(cfg.output_dir) / "model_best.pt")
@@ -22,15 +34,15 @@ def load_vpr_model(config: ExperimentConfig, checkpoint: str | Path | None = Non
     if state.get("kind") != "vpr_inference":
         raise ValueError("Expected an inference-only VPR checkpoint")
     model = build_descriptor_model(
-        cfg.backbone,
         cfg.aggregator,
         image_height=cfg.image_height,
         image_width=cfg.image_width,
         descriptor_dim=cfg.descriptor_dim,
         pretrained=False,
         model_family=cfg.model_family,
+        num_clusters=cfg.num_clusters,
         init_checkpoint=(
-            cfg.init_checkpoint if cfg.model_family == "mixvpr" else ""
+            cfg.init_checkpoint if cfg.model_family in {"mixvpr", "netvlad"} else ""
         ),
     )
     model.load_state_dict(state["model"])
@@ -71,7 +83,7 @@ def benchmark_model(
     result = {
         "device": str(device),
         "checkpoint": str(checkpoint_path),
-        "backbone": config.vpr.backbone,
+        "encoder": config.vpr.model_family,
         "aggregator": config.vpr.aggregator,
         "image_size": [config.vpr.image_height, config.vpr.image_width],
         "descriptor_dim": config.vpr.descriptor_dim,
@@ -104,7 +116,7 @@ def benchmark_model(
             config,
             job_type="benchmark-vpr",
             default_name=(
-                f"benchmark-{config.vpr.backbone}-{config.vpr.aggregator}-"
+                f"benchmark-{config.vpr.model_family}-{config.vpr.aggregator}-"
                 f"{config.vpr.image_height}x{config.vpr.image_width}"
             ),
             output_dir=config.vpr.output_dir,
@@ -115,6 +127,7 @@ def benchmark_model(
 
 
 def export_onnx(config: ExperimentConfig, checkpoint: str | Path | None = None) -> Path:
+    _require_onnx_dependencies()
     model, _, _ = load_vpr_model(config, checkpoint)
     model.eval()
     sample = torch.randn(1, 3, config.vpr.image_height, config.vpr.image_width)

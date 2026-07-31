@@ -53,6 +53,11 @@ class ContentObjective(nn.Module, ABC):
     def adversary_loss(self, source_features: list[torch.Tensor], fake_features: list[torch.Tensor]):
         return None
 
+    def identity_loss(
+        self, target_features: list[torch.Tensor], identity_features: list[torch.Tensor]
+    ) -> torch.Tensor | None:
+        return None
+
 
 class ProjectionHeads(nn.Module):
     def __init__(self, input_dims: tuple[int, ...], output_dim: int):
@@ -69,6 +74,19 @@ class ProjectionHeads(nn.Module):
             projected.append(head(sampled))
             returned_ids.append(patch_ids)
         return projected, returned_ids
+
+
+class LazyProjectionHeads(nn.Module):
+    """QS-Attn netF MLPs are initialized from the tapped feature shapes."""
+
+    def __init__(self, count: int, output_dim: int):
+        super().__init__()
+        self.heads = nn.ModuleList(
+            nn.Sequential(
+                nn.LazyLinear(output_dim), nn.ReLU(True), nn.Linear(output_dim, output_dim)
+            )
+            for _ in range(count)
+        )
 
 
 class HardNegativeGenerator(nn.Module):
@@ -159,8 +177,8 @@ class QSAttnObjective(ContentObjective):
 
     def __init__(self, num_patches: int, feature_dim: int):
         super().__init__()
-        del feature_dim
         self.num_patches = num_patches
+        self.projector = LazyProjectionHeads(5, feature_dim)
 
     def _selected(self, source: torch.Tensor, fake: torch.Tensor):
         batch, channels, height, width = source.shape
@@ -176,24 +194,29 @@ class QSAttnObjective(ContentObjective):
         routed_fake = torch.bmm(attention.gather(1, selected.unsqueeze(-1).expand(-1, -1, height * width)), fake_flat)
         return routed_source, routed_fake
 
-    def generator_loss(self, source, fake, source_features, fake_features):
-        del source, fake
+    def _feature_loss(self, source_features, fake_features):
         losses = []
-        for index, (source_feature, fake_feature) in enumerate(
-            zip(source_features, fake_features)
+        for index, (source_feature, fake_feature, head) in enumerate(
+            zip(source_features, fake_features, self.projector.heads)
         ):
             if index < 3:
-                source_sample, ids = _sample_features(
+                source_routed, ids = _sample_features(
                     source_feature.detach(), self.num_patches
                 )
-                fake_sample, _ = _sample_features(fake_feature, self.num_patches, ids)
-                losses.append(_batch_patch_nce(fake_sample, source_sample))
+                fake_routed, _ = _sample_features(fake_feature, self.num_patches, ids)
             else:
                 source_routed, fake_routed = self._selected(
                     source_feature.detach(), fake_feature
                 )
-                losses.append(_batch_patch_nce(fake_routed, source_routed))
+            losses.append(_batch_patch_nce(head(fake_routed), head(source_routed)))
         return torch.stack(losses).mean()
+
+    def generator_loss(self, source, fake, source_features, fake_features):
+        del source, fake
+        return self._feature_loss(source_features, fake_features)
+
+    def identity_loss(self, target_features, identity_features):
+        return self._feature_loss(target_features, identity_features)
 
 
 def build_content_objective(

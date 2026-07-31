@@ -10,7 +10,6 @@ data:
 vpr:
   output_dir: runs/vpr/three_safe/mixvpr_r50_512_320x320_seed0
   model_family: mixvpr
-  backbone: resnet50
   aggregator: mixvpr
   descriptor_dim: 512
   image_height: 320
@@ -25,7 +24,7 @@ vpr:
   batch_size: 8
   gradient_accumulation_steps: 2
   workers: 4
-  backbone_lr: 0.000001
+  encoder_lr: 0.000001
   aggregator_lr: 0.000001
   classifier_lr: 0.0001
   classifier_warmup_lr: 0.001
@@ -35,7 +34,6 @@ vpr:
   early_stopping: false
   epoch_one_max_recall_drop: 0.02
   init_checkpoint: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/checkpoints/resnet50_MixVPR_512_channels(256)_rows(2).ckpt
-  init_checkpoint_scope: full
   datasets: [msls, robotcar, svox]
   min_class_images_by_dataset: {msls: 4, robotcar: 2, svox: 2}
   sampler: rolling_balanced

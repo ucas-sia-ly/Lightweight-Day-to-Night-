@@ -87,27 +87,49 @@ def _feature_grid(backbone: nn.Module, height: int, width: int) -> tuple[int, in
     return int(output.shape[-2]), int(output.shape[-1])
 
 
-def _build_backbone(name: str, pretrained: bool) -> tuple[nn.Module, int, int]:
-    if name == "resnet50":
-        weights = models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
-        network = models.resnet50(weights=weights)
-        return nn.Sequential(*list(network.children())[:-2]), 2048, 32
-    if name == "efficientnet_b0":
-        weights = models.EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None
-        network = models.efficientnet_b0(weights=weights)
-        return network.features, 1280, 32
-    if name in {"regnet_y_800mf", "regnet_y_1_6gf"}:
-        constructor, weights_type = {
-            "regnet_y_800mf": (models.regnet_y_800mf, models.RegNet_Y_800MF_Weights),
-            "regnet_y_1_6gf": (models.regnet_y_1_6gf, models.RegNet_Y_1_6GF_Weights),
-        }[name]
-        network = constructor(weights=weights_type.IMAGENET1K_V2 if pretrained else None)
-        return nn.Sequential(network.stem, network.trunk_output), network.fc.in_features, 32
-    if name == "convnext_tiny":
-        weights = models.ConvNeXt_Tiny_Weights.IMAGENET1K_V1 if pretrained else None
-        network = models.convnext_tiny(weights=weights)
-        return network.features, network.classifier[-1].in_features, 32
-    raise ValueError(f"Unsupported backbone: {name}")
+def _build_resnet50(pretrained: bool) -> tuple[nn.Module, int]:
+    weights = models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
+    network = models.resnet50(weights=weights)
+    return nn.Sequential(*list(network.children())[:-2]), 2048
+
+
+def _build_vgg16(pretrained: bool) -> tuple[nn.Module, int]:
+    weights = models.VGG16_Weights.IMAGENET1K_V1 if pretrained else None
+    network = models.vgg16(weights=weights)
+    return nn.Sequential(*list(network.features.children())[:-2]), 512
+
+
+class NetVLADPool(nn.Module):
+    """NetVLAD-v1 layer compatible with the public Patch-NetVLAD checkpoint."""
+
+    def __init__(self, num_clusters: int = 64, dim: int = 512):
+        super().__init__()
+        self.num_clusters = int(num_clusters)
+        self.dim = int(dim)
+        self.conv = nn.Conv2d(dim, num_clusters, 1, bias=False)
+        self.centroids = nn.Parameter(torch.empty(num_clusters, dim))
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        value = F.normalize(inputs, p=2, dim=1)
+        assignment = F.softmax(self.conv(value).flatten(2), dim=1)
+        flattened = value.flatten(2)
+        clusters = []
+        for index in range(self.num_clusters):
+            residual = flattened - self.centroids[index].view(1, self.dim, 1)
+            clusters.append((residual * assignment[:, index:index + 1]).sum(dim=-1))
+        descriptor = F.normalize(torch.stack(clusters, dim=1), p=2, dim=2).flatten(1)
+        return F.normalize(descriptor, p=2, dim=1)
+
+
+class NetVLADWPCA(nn.Module):
+    def __init__(self, descriptor_dim: int = 4096, num_clusters: int = 64):
+        super().__init__()
+        self.pool = NetVLADPool(num_clusters=num_clusters, dim=512)
+        self.wpca = nn.Conv2d(num_clusters * 512, descriptor_dim, 1)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        pooled = self.pool(inputs).unsqueeze(-1).unsqueeze(-1)
+        return F.normalize(self.wpca(pooled).flatten(1), p=2, dim=1)
 
 
 class DescriptorModel(nn.Module):
@@ -116,14 +138,12 @@ class DescriptorModel(nn.Module):
         backbone: nn.Module,
         aggregator: nn.Module,
         descriptor_dim: int = 512,
-        backbone_name: str = "",
         aggregator_name: str = "",
     ):
         super().__init__()
         self.backbone = backbone
         self.aggregator = aggregator
         self.descriptor_dim = int(descriptor_dim)
-        self.backbone_name = backbone_name
         self.aggregator_name = aggregator_name
 
     def encode(self, images: torch.Tensor) -> torch.Tensor:
@@ -139,7 +159,6 @@ class DescriptorModel(nn.Module):
 
 
 def build_descriptor_model(
-    backbone_name: str,
     aggregator_name: str,
     *,
     image_height: int,
@@ -147,8 +166,8 @@ def build_descriptor_model(
     descriptor_dim: int = 512,
     pretrained: bool = True,
     init_checkpoint: str = "",
-    init_checkpoint_scope: str = "full",
     model_family: str = "custom",
+    num_clusters: int = 64,
 ) -> DescriptorModel:
     if model_family == "mixvpr":
         if (image_height, image_width) != (320, 320):
@@ -158,7 +177,18 @@ def build_descriptor_model(
             raise ValueError("Official MixVPR requires a checkpoint")
         _strict_load_state(model, init_checkpoint)
         return model
-    backbone, channels, _ = _build_backbone(backbone_name, pretrained)
+    if model_family == "netvlad":
+        if descriptor_dim != 4096 or num_clusters != 64:
+            raise ValueError("Official NetVLAD requires 64 clusters and a 4096-D WPCA output")
+        if not init_checkpoint:
+            raise ValueError("Official NetVLAD requires the public Pitts30k checkpoint")
+        backbone, channels = _build_vgg16(False)
+        model = DescriptorModel(
+            backbone, NetVLADWPCA(descriptor_dim, num_clusters), descriptor_dim, "netvlad"
+        )
+        _strict_load_netvlad(model, init_checkpoint)
+        return model
+    backbone, channels = _build_resnet50(pretrained)
     if aggregator_name == "gem":
         aggregator = GeMFC(channels, descriptor_dim)
     elif aggregator_name == "convap":
@@ -168,12 +198,10 @@ def build_descriptor_model(
         aggregator = MixVPR(channels, grid, descriptor_dim)
     else:
         raise ValueError(f"Unsupported aggregator: {aggregator_name}")
-    model = DescriptorModel(
-        backbone, aggregator, descriptor_dim, backbone_name, aggregator_name
-    )
+    model = DescriptorModel(backbone, aggregator, descriptor_dim, aggregator_name)
     if init_checkpoint:
-        result = load_initial_weights(model, init_checkpoint, init_checkpoint_scope)
-        if init_checkpoint_scope == "full" and (result["missing"] or result["unexpected"]):
+        result = load_initial_weights(model, init_checkpoint, "full")
+        if result["missing"] or result["unexpected"]:
             raise ValueError(f"Strict initial checkpoint mismatch: {result}")
     return model
 
@@ -202,7 +230,6 @@ class OfficialMixVPRModel(nn.Module):
         self.backbone = CroppedResNet50()
         self.aggregator = MixVPR(1024, (20, 20), descriptor_dim)
         self.descriptor_dim = int(descriptor_dim)
-        self.backbone_name = "resnet50"
         self.aggregator_name = "mixvpr"
 
     def encode(self, images: torch.Tensor) -> torch.Tensor:
@@ -234,6 +261,25 @@ def _strict_load_state(model: nn.Module, checkpoint: str | Path) -> None:
     result = model.load_state_dict(_checkpoint_state(checkpoint), strict=True)
     if result.missing_keys or result.unexpected_keys:
         raise ValueError(f"Strict checkpoint mismatch: {result}")
+
+
+def _strict_load_netvlad(model: DescriptorModel, checkpoint: str | Path) -> None:
+    state = _checkpoint_state(checkpoint)
+    mapped = {}
+    for key, value in state.items():
+        if key.startswith("encoder."):
+            mapped["backbone." + key.removeprefix("encoder.")] = value
+        elif key.startswith("pool."):
+            mapped["aggregator.pool." + key.removeprefix("pool.")] = value
+        elif key.startswith("WPCA.0."):
+            mapped["aggregator.wpca." + key.removeprefix("WPCA.0.")] = value
+    required_prefixes = ("backbone.", "aggregator.pool.", "aggregator.wpca.")
+    missing_sections = [prefix for prefix in required_prefixes if not any(k.startswith(prefix) for k in mapped)]
+    if missing_sections:
+        raise ValueError(f"NetVLAD checkpoint is missing required sections: {missing_sections}")
+    result = model.load_state_dict(mapped, strict=True)
+    if result.missing_keys or result.unexpected_keys:
+        raise ValueError(f"Strict NetVLAD checkpoint mismatch: {result}")
 
 
 def eigenplaces_checkpoint(descriptor_dim: int) -> Path:

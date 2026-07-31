@@ -1,0 +1,64 @@
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/admin123/.netrc.
+wandb: Currently logged in as: ucas-sia-ly (ucas-sia-ly-shenyang-institute-of-automation-chinese-aca) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run 312f445b45d24176
+wandb: Tracking run with wandb version 0.25.1
+wandb: Run data is saved locally in /home/admin123/diffusion_vpr_test/A2B-LightVPR/runs/reference/nocplace_protocol_clean5k/wandb/run-20260727_152847-312f445b45d24176
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run nocplace-r50-ikt-clean5k
+wandb: ⭐️ View project at https://wandb.ai/ucas-sia-ly-shenyang-institute-of-automation-chinese-aca/a2b-lightvpr
+wandb: 🚀 View run at https://wandb.ai/ucas-sia-ly-shenyang-institute-of-automation-chinese-aca/a2b-lightvpr/runs/312f445b45d24176
+wandb: updating run metadata
+wandb: uploading wandb-summary.json; uploading config.yaml
+wandb: uploading history steps 200-200, summary
+wandb: 
+wandb: Run history:
+wandb:      train/classifier_lr ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+wandb:                train/ikt █▇▇▇▇▆▆▅▄▃▃▃▃▃▂▃▂▂▂▂▂▂▂▂▁▂▁▁▁▂▁▁▁▁▂▁▁▁▁▁
+wandb:                train/lmc ████▇▆▆▆▆▅▅▅▅▅▅▄▄▄▄▃▃▃▃▄▄▃▁▂▁▂▁▂▂▂▂▂▂▂▂▂
+wandb:           train/model_lr ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+wandb:            train/samples ▁▁▁▁▂▂▂▂▂▂▂▃▃▃▃▃▄▄▄▄▄▄▅▅▅▅▆▆▆▆▇▇▇▇▇▇▇███
+wandb: train/samples_per_second ▁▇██████████████████████████████████████
+wandb:    train/student_entropy ▆▅▅▆▆█▇███▇▆▆▅▆▇▇▅▆▅▆▄▄▆▂▅▅▆▆▄▆▁▂▄▂▁▃▂▃▁
+wandb:    train/teacher_entropy ▇▆▆▆▄▇██▇▇▇█▇█▇▆▆█▆▅▇▆▆▅▇▅▅▆▄▅▇▆▅▂▄▇▆▅▁▆
+wandb:              train/total █▆▆▆▆▅▄▃▃▃▃▃▃▂▃▂▂▂▂▂▂▂▂▂▂▂▁▂▂▂▁▁▁▁▁▁▁▁▁▁
+wandb:      trainer/global_step ▁▁▁▁▁▁▂▂▂▂▂▂▃▃▃▃▄▄▄▄▄▄▄▄▄▅▅▅▅▆▆▆▇▇▇█████
+wandb: 
+wandb: Run summary:
+wandb:         nocplace/classes 29860
+wandb:      nocplace/iterations 10000
+wandb:      train/classifier_lr 0.01
+wandb:                train/ikt 0.16457
+wandb:                train/lmc 16.09166
+wandb:           train/model_lr 0.0
+wandb:            train/samples 320000
+wandb: train/samples_per_second 134.56326
+wandb:    train/student_entropy 8.17374
+wandb:    train/teacher_entropy 9.53518
+wandb:                       +2 ...
+wandb: 
+wandb: 🚀 View run nocplace-r50-ikt-clean5k at: https://wandb.ai/ucas-sia-ly-shenyang-institute-of-automation-chinese-aca/a2b-lightvpr/runs/312f445b45d24176
+wandb: ⭐️ View project at: https://wandb.ai/ucas-sia-ly-shenyang-institute-of-automation-chinese-aca/a2b-lightvpr
+wandb: Synced 4 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./runs/reference/nocplace_protocol_clean5k/wandb/run-20260727_152847-312f445b45d24176/logs
+{
+  "checkpoint": "/home/admin123/diffusion_vpr_test/A2B-LightVPR/runs/reference/nocplace_protocol_clean5k/best_model.pth",
+  "checkpoint_sha256": "4656b750961fbbe81b67e1716061f0a7d04cc369620a4dfce2508ed554e24d15",
+  "classes": 29860,
+  "iterations": 10000,
+  "loss": {
+    "ikt": 0.16456757485866547,
+    "lmc": 16.091657638549805
+  },
+  "protocol_name": "NocPlace-protocol-clean5k-local",
+  "samples": 320000,
+  "teacher_cache": {
+    "checkpoint_sha256": "da1f0aa3651df56b3b2ce3cf786103312fa6d22a110276b984f8a0442a155ca3",
+    "complete": true,
+    "descriptor_dim": 512,
+    "image_ids_sha256": "68d8eb483e284ba793e5c3acb4c571519de6eb028325e11ff956f2d5c7b8e4ec",
+    "manifest_sha256": "b4c96242789b5702f7615dfa3e07a93a0a0d467843227c5cc6b64e15f574a44b",
+    "normalized": true,
+    "rows": 118313
+  },
+  "training_state": "/home/admin123/diffusion_vpr_test/A2B-LightVPR/runs/reference/nocplace_protocol_clean5k/training_state.pt"
+}

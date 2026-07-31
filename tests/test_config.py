@@ -101,24 +101,6 @@ def test_removed_paired_edge_field_is_rejected():
         apply_overrides(base_config(), ["generator.paired_edge_weight=0.5"])
 
 
-@pytest.mark.parametrize(
-    "path,backbone",
-    [
-        ("configs/vpr_screen_efficientnet_b0_three_320x480.yaml", "efficientnet_b0"),
-        ("configs/vpr_screen_regnet_y_800mf_three_320x480.yaml", "regnet_y_800mf"),
-        ("configs/vpr_screen_regnet_y_1_6gf_three_320x480.yaml", "regnet_y_1_6gf"),
-        ("configs/vpr_screen_convnext_tiny_three_320x480.yaml", "convnext_tiny"),
-    ],
-)
-def test_three_dataset_backbone_screen_configs(path, backbone):
-    config = load_config(path)
-    assert config.vpr.backbone == backbone
-    assert config.vpr.samples_per_epoch == 12000
-    assert config.vpr.min_class_images_by_dataset["robotcar"] == 2
-    assert config.vpr.dataset_epoch_quotas == {"msls": 4000, "robotcar": 4000, "svox": 4000}
-    assert config.vpr.sampler == "rolling_balanced"
-
-
 def test_clean_generator_excludes_muses_and_edge():
     config = load_config("configs/generator_qsattn_clean_night.yaml")
     assert "muses" not in config.data.dataset_weights
@@ -165,6 +147,40 @@ def test_150k_generator_config_is_fresh_output():
     assert config.data.generated_root.endswith("_150k")
 
 
+def test_lpaired_ablation_changes_only_the_paired_loss_arm():
+    full = load_config("configs/generator_qsattn_clean_night_150k.yaml")
+    ablated = load_config("configs/generator_qsattn_no_lpaired_150k.yaml")
+    assert full.generator.paired_probability == ablated.generator.paired_probability
+    assert full.generator.paired_charbonnier_weight == pytest.approx(1.0)
+    assert ablated.generator.paired_charbonnier_weight == pytest.approx(0.0)
+    ignored_data = {"generated_root", "generated_database_root"}
+    full_data = {k: v for k, v in full.as_dict()["data"].items() if k not in ignored_data}
+    ablated_data = {
+        k: v for k, v in ablated.as_dict()["data"].items() if k not in ignored_data
+    }
+    assert full_data == ablated_data
+    ignored_generator = {"output_dir", "paired_charbonnier_weight"}
+    full_generator = {
+        k: v for k, v in full.as_dict()["generator"].items()
+        if k not in ignored_generator
+    }
+    ablated_generator = {
+        k: v for k, v in ablated.as_dict()["generator"].items()
+        if k not in ignored_generator
+    }
+    assert full_generator == ablated_generator
+
+    full_vpr = load_config("configs/vpr_mixvpr_r50_512_safe_60k.yaml")
+    ablated_vpr = load_config("configs/vpr_mixvpr_r50_512_no_lpaired_60k.yaml")
+    full_vpr_values = full_vpr.as_dict()["vpr"]
+    ablated_vpr_values = ablated_vpr.as_dict()["vpr"]
+    assert {
+        key: value for key, value in full_vpr_values.items() if key != "output_dir"
+    } == {
+        key: value for key, value in ablated_vpr_values.items() if key != "output_dir"
+    }
+
+
 @pytest.mark.parametrize(
     "path,family,dimension,batch,accum",
     [
@@ -196,30 +212,35 @@ def test_safe_official_configs_preserve_initialization(path, family, dimension, 
     assert not cfg.classifier_cpu_offload
 
 
-@pytest.mark.parametrize(
-    "path,backbone",
-    [
-        ("configs/vpr_screen_efficientnet_b0_safe_60k.yaml", "efficientnet_b0"),
-        ("configs/vpr_screen_regnet_y_800mf_safe_60k.yaml", "regnet_y_800mf"),
-        ("configs/vpr_screen_regnet_y_1_6gf_safe_60k.yaml", "regnet_y_1_6gf"),
-        ("configs/vpr_screen_convnext_tiny_safe_60k.yaml", "convnext_tiny"),
-    ],
-)
-def test_safe_lightweight_configs_use_fixed_no_pair_budget(path, backbone):
-    cfg = load_config(path).vpr
-    assert cfg.backbone == backbone
-    assert cfg.samples_per_epoch == 60000
-    assert cfg.epochs == 20
-    assert cfg.cross_domain_aux == "none"
-    assert cfg.preservation_teacher == "none"
-    assert cfg.freeze_batch_norm
-    assert cfg.evaluate_epoch_zero
-    assert not cfg.early_stopping
-    assert cfg.scheduler == "cosine"
-
-
 def test_nocplace_repro_override_and_fingerprint():
     config = load_config("configs/nocplace_repro_clean5k.yaml")
     updated = apply_overrides(config, ["nocplace_repro.workers=0"])
     assert updated.nocplace_repro.workers == 0
     assert updated.fingerprint() != config.fingerprint()
+
+
+def test_netvlad_and_official_qsattn_configs_are_strict():
+    netvlad = load_config("configs/vpr_netvlad_vgg16_4096_safe_60k.yaml")
+    assert (netvlad.vpr.model_family, netvlad.vpr.aggregator) == ("netvlad", "netvlad")
+    assert (netvlad.vpr.num_clusters, netvlad.vpr.descriptor_dim) == (64, 4096)
+    generator = load_config("configs/generator_qsattn_official_objective_150k.yaml")
+    assert generator.generator.qs_nce_identity
+    assert generator.generator.num_patches == 256
+    assert generator.generator.paired_charbonnier_weight == 0.0
+
+
+@pytest.mark.parametrize("domain", ["day", "fake"])
+def test_compute_matched_single_domain_configs(domain):
+    config = load_config(
+        f"configs/vpr_loss_official_{domain}_only_compute_matched_seed0.yaml"
+    )
+    assert config.vpr.train_domains == domain
+    assert config.vpr.samples_per_epoch == 120000
+    assert config.vpr.dataset_epoch_quotas == {
+        "msls": 40000, "robotcar": 40000, "svox": 40000,
+    }
+    assert config.vpr.batch_size == 8
+    assert config.vpr.gradient_accumulation_steps == 4
+    assert config.vpr.samples_per_epoch // (
+        config.vpr.batch_size * config.vpr.gradient_accumulation_steps
+    ) == 3750

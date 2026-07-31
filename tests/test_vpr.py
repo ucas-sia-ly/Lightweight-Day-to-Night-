@@ -11,17 +11,13 @@ from a2b_lightvpr.vpr.losses import (
     preservation_hinge,
     vpr_training_loss,
 )
-from a2b_lightvpr.vpr.model import MixVPR, build_descriptor_model, eigenplaces_checkpoint
+from a2b_lightvpr.vpr.model import NetVLADPool, MixVPR, build_descriptor_model, eigenplaces_checkpoint
 
 
-@pytest.mark.parametrize(
-    "backbone",
-    ["efficientnet_b0", "regnet_y_800mf", "regnet_y_1_6gf", "convnext_tiny"],
-)
 @pytest.mark.parametrize("aggregator", ["gem", "convap", "mixvpr"])
-def test_all_screening_models_honor_512_contract(backbone, aggregator):
+def test_resnet50_aggregators_honor_512_contract(aggregator):
     model = build_descriptor_model(
-        backbone, aggregator, image_height=64, image_width=96, pretrained=False
+        aggregator, image_height=64, image_width=96, pretrained=False
     ).eval()
     with torch.no_grad():
         descriptor = model.encode(torch.randn(1, 3, 64, 96))
@@ -70,6 +66,13 @@ def test_mixvpr_descriptor_dimensions(descriptor_dim):
     with torch.no_grad():
         value = model(torch.randn(2, 32, 4, 6))
     assert value.shape == (2, descriptor_dim)
+
+
+def test_netvlad_pool_output_contract():
+    pool = NetVLADPool(num_clusters=4, dim=8)
+    output = pool(torch.randn(2, 8, 5, 7))
+    assert output.shape == (2, 32)
+    assert torch.allclose(output.norm(dim=1), torch.ones(2), atol=1e-5)
 
 
 def test_eigenplaces_download_records_official_metadata(tmp_path, monkeypatch):

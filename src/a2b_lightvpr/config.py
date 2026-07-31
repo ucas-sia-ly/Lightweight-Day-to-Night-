@@ -16,6 +16,7 @@ class DataConfig:
     generator_manifest: str = "data/manifests/generator_train.csv"
     vpr_source_manifest: str = "data/manifests/vpr_train.csv"
     generated_root: str = "data/generated/robotcar_train"
+    generated_database_root: str = "data/generated/evaluation_databases"
     tokyo_root: str = ""
     aachen_root: str = ""
     svox_root: str = ""
@@ -44,17 +45,20 @@ class GeneratorConfig:
     content_weight: float = 1.0
     num_patches: int = 64
     feature_dim: int = 256
+    qs_mode: str = "global"
+    qs_nce_identity: bool = False
+    qs_netf: str = "mlp_sample"
     paired_probability: float = 0.2
     paired_charbonnier_weight: float = 1.0
 
 
 @dataclass(frozen=True)
 class VPRConfig:
-    output_dir: str = "runs/vpr/efficientnet_b0_gem_320x480"
+    output_dir: str = "runs/vpr/resnet50_gem_320x480"
     model_family: str = "custom"
-    backbone: str = "efficientnet_b0"
     aggregator: str = "gem"
     descriptor_dim: int = 512
+    num_clusters: int = 64
     image_height: int = 256
     image_width: int = 384
     loss_profile: str = "v2"
@@ -63,8 +67,7 @@ class VPRConfig:
     gradient_accumulation_steps: int = 1
     classifier_cpu_offload: bool = False
     workers: int = 4
-    backbone_lr: float = 1e-5
-    head_lr: float = 1e-4
+    encoder_lr: float = 1e-5
     aggregator_lr: float = 1e-4
     classifier_lr: float = 1e-4
     classifier_warmup_lr: float = 1e-3
@@ -84,7 +87,6 @@ class VPRConfig:
     amp: bool = True
     patience: int = 4
     init_checkpoint: str = ""
-    init_checkpoint_scope: str = "full"
     resume: str = ""
     min_class_images: int = 4
     min_class_images_by_dataset: dict[str, int] = field(default_factory=dict)
@@ -113,10 +115,10 @@ class EvalConfig:
     positive_radius_m: float = 10.0
     positive_yaw_deg: float = 30.0
     recalls: tuple[int, ...] = (1, 5, 10)
-    baseline_recall1: float = 0.8160535117056856
     bootstrap_samples: int = 10_000
     protocol: str = "project"
     datasets: tuple[str, ...] = ("robotcar",)
+    database_domain: str = "day"
 
 
 @dataclass(frozen=True)
@@ -259,17 +261,14 @@ def validate_config(config: ExperimentConfig) -> None:
         raise ValueError("NocPlace reproduction requires T=4 and IKT weight=30")
     if config.generator.objective not in {"negcut", "qsattn"}:
         raise ValueError("generator.objective must be one of: negcut, qsattn")
-    if config.vpr.model_family not in {"custom", "cosplace", "eigenplaces", "mixvpr"}:
-        raise ValueError("vpr.model_family must be custom, cosplace, eigenplaces, or mixvpr")
-    if config.vpr.backbone not in {
-        "efficientnet_b0", "regnet_y_800mf", "regnet_y_1_6gf",
-        "convnext_tiny", "resnet50",
-    }:
-        raise ValueError("Unsupported lightweight VPR backbone")
-    if config.vpr.aggregator not in {"gem", "convap", "mixvpr"}:
-        raise ValueError("vpr.aggregator must be gem, convap, or mixvpr")
-    if config.vpr.init_checkpoint_scope not in {"full", "backbone"}:
-        raise ValueError("vpr.init_checkpoint_scope must be full or backbone")
+    if config.generator.qs_mode != "global":
+        raise ValueError("The active official QS-Attn objective requires qs_mode=global")
+    if config.generator.qs_netf != "mlp_sample":
+        raise ValueError("The active official QS-Attn objective requires qs_netf=mlp_sample")
+    if config.vpr.model_family not in {"custom", "cosplace", "eigenplaces", "mixvpr", "netvlad"}:
+        raise ValueError("vpr.model_family must be custom, cosplace, eigenplaces, mixvpr, or netvlad")
+    if config.vpr.aggregator not in {"gem", "convap", "mixvpr", "netvlad"}:
+        raise ValueError("vpr.aggregator must be gem, convap, mixvpr, or netvlad")
     if config.vpr.loss_profile not in {"v0", "v1", "v2", "v3"}:
         raise ValueError("vpr.loss_profile must be v0, v1, v2, or v3")
     if config.vpr.scheduler not in {"constant", "cosine", "plateau"}:
@@ -296,8 +295,11 @@ def validate_config(config: ExperimentConfig) -> None:
         raise ValueError("EigenPlaces adaptation supports descriptor_dim 512 or 2048")
     if config.vpr.model_family == "mixvpr" and config.vpr.descriptor_dim not in {512, 4096}:
         raise ValueError("MixVPR adaptation supports descriptor_dim 512 or 4096")
-    if config.vpr.model_family in {"cosplace", "eigenplaces", "mixvpr"} and config.vpr.backbone != "resnet50":
-        raise ValueError("Official VPR adaptation candidates require backbone=resnet50")
+    if config.vpr.model_family == "netvlad":
+        if config.vpr.aggregator != "netvlad" or config.vpr.descriptor_dim != 4096:
+            raise ValueError("NetVLAD adaptation requires netvlad aggregation and 4096 dimensions")
+        if config.vpr.num_clusters != 64:
+            raise ValueError("The official NetVLAD checkpoint requires 64 clusters")
     if (config.vpr.image_height, config.vpr.image_width) not in {
         (256, 384),
         (320, 480),
@@ -364,7 +366,7 @@ def validate_config(config: ExperimentConfig) -> None:
     if not 0.0 < config.vpr.scheduler_min_lr_ratio <= 1.0:
         raise ValueError("vpr.scheduler_min_lr_ratio must be in (0, 1]")
     if min(
-        config.vpr.backbone_lr,
+        config.vpr.encoder_lr,
         config.vpr.aggregator_lr,
         config.vpr.classifier_lr,
         config.vpr.classifier_warmup_lr,
@@ -378,6 +380,8 @@ def validate_config(config: ExperimentConfig) -> None:
         raise ValueError("Preservation weight and epoch-one drop threshold cannot be negative")
     if config.evaluation.protocol not in {"project", "paper"}:
         raise ValueError("evaluation.protocol must be project or paper")
+    if config.evaluation.database_domain not in {"day", "generated_night"}:
+        raise ValueError("evaluation.database_domain must be day or generated_night")
     if config.tracking.mode not in {"online", "offline"}:
         raise ValueError("tracking.mode must be online or offline")
     if config.tracking.log_every_steps < 1 or config.tracking.image_every_steps < 1:

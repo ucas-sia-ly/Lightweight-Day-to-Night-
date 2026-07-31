@@ -1,0 +1,113 @@
+{
+    // Keep generated files out of the paper and template directories.
+    "latex-workshop.latex.outDir": "%DIR%/.latex-out",
+    "latex-workshop.latex.tools": [
+        {
+            "name": "latexmk-lualatex",
+            "command": "latexmk",
+            "args": [
+                "-synctex=1",
+                "-interaction=nonstopmode",
+                "-file-line-error",
+                "-halt-on-error",
+                "-lualatex",
+                "-outdir=%OUTDIR%",
+                "%DOC%"
+            ]
+        },
+        {
+            "name": "latexmk-pdflatex",
+            "command": "latexmk",
+            "args": [
+                "-synctex=1",
+                "-interaction=nonstopmode",
+                "-file-line-error",
+                "-halt-on-error",
+                "-pdf",
+                "-outdir=%OUTDIR%",
+                "%DOC%"
+            ]
+        }
+    ],
+    "latex-workshop.latex.recipes": [
+        {
+            "name": "LuaLaTeX (中文论文，默认)",
+            "tools": [
+                "latexmk-lualatex"
+            ]
+        },
+        {
+            "name": "pdfLaTeX (IEEE 英文模板)",
+            "tools": [
+                "latexmk-pdflatex"
+            ]
+        }
+    ],
+    "latex-workshop.latex.recipe.default": "first",
+    "latex-workshop.latex.autoBuild.run": "onSave",
+    "latex-workshop.latex.autoClean.run": "never",
+
+    // Open the PDF beside the source and keep source/PDF navigation available.
+    "latex-workshop.view.pdf.viewer": "tab",
+    "latex-workshop.view.pdf.tab.editorGroup": "right",
+    "latex-workshop.synctex.afterBuild.enabled": true,
+    "latex-workshop.view.pdf.internal.synctex.keybinding": "double-click",
+    "latex-workshop.message.error.show": true,
+    "latex-workshop.message.warning.show": false,
+    "latex-workshop.intellisense.package.enabled": true,
+    "latex-workshop.intellisense.unimathsymbols.enabled": true,
+    "latex-workshop.hover.preview.enabled": true,
+
+    // LTeX+ checks both Chinese prose and embedded English terms in LaTeX files.
+    "ltex.enabled": [
+        "latex",
+        "bibtex"
+    ],
+    "ltex.language": "zh-CN",
+    "ltex.additionalRules.enablePickyRules": true,
+    "ltex.additionalRules.motherTongue": "zh-CN",
+
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true,
+        "**/__pycache__": true,
+        "**/.pytest_cache": true,
+        "**/.mypy_cache": true,
+        "**/.ruff_cache": true,
+        "**/.latex-out": true,
+        "**/a2b_lightvpr_中文论文草稿.aux": true,
+        "**/a2b_lightvpr_中文论文草稿.log": true,
+        "**/a2b_lightvpr_中文论文草稿.gz": true,
+        "**/a2b_lightvpr_中文论文草稿.out": true
+    },
+    "files.watcherExclude": {
+        "**/.latex-out/**": true
+    },
+    "search.exclude": {
+        "**/.latex-out": true
+    },
+    "[latex]": {
+        "editor.wordWrap": "on",
+        "editor.wordWrapColumn": 100,
+        "editor.rulers": [
+            100
+        ],
+        "editor.quickSuggestions": {
+            "comments": "off",
+            "strings": "on",
+            "other": "on"
+        },
+        "editor.suggest.snippetsPreventQuickSuggestions": false,
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true,
+        "editor.formatOnSave": false
+    },
+    "[bibtex]": {
+        "editor.wordWrap": "on",
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true
+    }
+}

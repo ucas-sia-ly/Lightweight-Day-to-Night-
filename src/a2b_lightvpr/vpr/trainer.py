@@ -41,7 +41,7 @@ def _set_seed(seed: int) -> None:
 
 
 def optimizer_base_lrs(cfg) -> list[float]:
-    return [cfg.backbone_lr, cfg.aggregator_lr, cfg.classifier_lr]
+    return [cfg.encoder_lr, cfg.aggregator_lr, cfg.classifier_lr]
 
 
 def build_vpr_scheduler(optimizer, cfg, steps_per_epoch: int):
@@ -112,7 +112,7 @@ def configure_training_phase(model, optimizer, cfg, epoch: int) -> bool:
 def build_vpr_optimizer(model, classifier, cfg):
     return torch.optim.AdamW(
         [
-            {"params": model.backbone.parameters(), "lr": cfg.backbone_lr},
+            {"params": model.backbone.parameters(), "lr": cfg.encoder_lr},
             {"params": model.aggregator.parameters(), "lr": cfg.aggregator_lr},
             {"params": classifier.parameters(), "lr": cfg.classifier_lr},
         ],
@@ -208,7 +208,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         config,
         job_type="train-vpr",
         default_name=(
-            f"vpr-{cfg.backbone}-{cfg.aggregator}-{cfg.image_height}x{cfg.image_width}"
+            f"vpr-{cfg.model_family}-{cfg.aggregator}-{cfg.image_height}x{cfg.image_width}"
             f"-{cfg.loss_profile}-seed{cfg.seed}"
         ),
         output_dir=output_dir,
@@ -241,15 +241,14 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
 
     initial_checkpoint = resolve_initial_checkpoint(cfg.init_checkpoint, cfg.descriptor_dim)
     model = build_descriptor_model(
-        cfg.backbone,
         cfg.aggregator,
         image_height=cfg.image_height,
         image_width=cfg.image_width,
         descriptor_dim=cfg.descriptor_dim,
         pretrained=not bool(initial_checkpoint),
         init_checkpoint=initial_checkpoint,
-        init_checkpoint_scope=cfg.init_checkpoint_scope,
         model_family=cfg.model_family,
+        num_clusters=cfg.num_clusters,
     ).to(device)
     needs_initial_teacher = (
         cfg.preservation_teacher == "initialization"
@@ -355,7 +354,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         )
         tracker.log_checkpoint(
             best_path,
-            name=f"vpr-{cfg.backbone}-{cfg.aggregator}-seed{cfg.seed}",
+            name=f"vpr-{cfg.model_family}-{cfg.aggregator}-seed{cfg.seed}",
             aliases=["best", "epoch-0"],
         )
 
@@ -373,12 +372,14 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         running = 0.0
         epoch_samples = 0
         epoch_optimizer_steps = 0
+        encoded_student_images = 0
+        teacher_images = 0
         data_time = 0.0
         step_time = 0.0
         epoch_start = time.perf_counter()
         data_wait_start = epoch_start
         optimizer.zero_grad(set_to_none=True)
-        progress = tqdm(loader, desc=f"vpr/{cfg.backbone}/{cfg.aggregator} epoch {epoch + 1}")
+        progress = tqdm(loader, desc=f"vpr/{cfg.model_family}/{cfg.aggregator} epoch {epoch + 1}")
         logged_first_update = False
         for batch_index, batch in enumerate(progress):
             batch_ready = time.perf_counter()
@@ -456,10 +457,14 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             batch_samples = int(day.shape[0])
             epoch_samples += batch_samples
             samples_seen += batch_samples
+            student_views = int(need_day) + int(need_fake)
+            encoded_student_images += batch_samples * student_views
+            teacher_images += batch_samples * int(
+                teacher is not None and "teacher_descriptor" not in batch
+            )
             running += float(loss.item())
             step_time += time.perf_counter() - step_start
             elapsed = max(time.perf_counter() - epoch_start, 1e-9)
-            image_multiplier = 3 if teacher is not None else 2
             progress.set_postfix(
                 loss=f"{loss.item():.3f}",
                 samples=f"{epoch_samples}/{cfg.samples_per_epoch}",
@@ -469,7 +474,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             ):
                 log_values = {
                     "train/total": float(loss.item()),
-                    "train/lr_backbone": float(optimizer.param_groups[0]["lr"]),
+                    "train/lr_encoder": float(optimizer.param_groups[0]["lr"]),
                     "train/lr_aggregator": float(optimizer.param_groups[1]["lr"]),
                     "train/lr_classifier": float(optimizer.param_groups[2]["lr"]),
                     "train/epoch": epoch + (batch_index + 1) / max(1, len(loader)),
@@ -477,8 +482,13 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
                     "train/samples_total": samples_seen,
                     "train/batches_epoch": len(loader),
                     "train/optimizer_steps_epoch": epoch_optimizer_steps,
+                    "train/source_samples": epoch_samples,
+                    "train/encoded_student_images": encoded_student_images,
+                    "train/teacher_images": teacher_images,
+                    "train/optimizer_steps": epoch_optimizer_steps,
+                    "train/domain_views_per_source": student_views,
                     "train/samples_per_second": epoch_samples / elapsed,
-                    "train/images_per_second": epoch_samples * image_multiplier / elapsed,
+                    "train/images_per_second": encoded_student_images / elapsed,
                     "train/data_time_ms": data_time * 1000 / max(1, batch_index + 1),
                     "train/step_time_ms": step_time * 1000 / max(1, batch_index + 1),
                     "train/bn_frozen": int(cfg.freeze_batch_norm),
@@ -523,7 +533,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             "validation/robotcar_project/valid_queries": int(metrics["valid_queries"]),
             "validation/best_recall_at_1": best_score,
             "train/epoch_loss_mean": running / max(1, len(loader)),
-            "train/lr_backbone": current_lrs[0],
+            "train/lr_encoder": current_lrs[0],
             "train/lr_aggregator": current_lrs[1],
             "train/lr_classifier": current_lrs[2],
             "train/lr_reduced": int(lr_reduced),
@@ -533,8 +543,13 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             "train/samples_total": samples_seen,
             "train/batches_epoch": len(loader),
             "train/optimizer_steps_epoch": epoch_optimizer_steps,
+            "train/source_samples": epoch_samples,
+            "train/encoded_student_images": encoded_student_images,
+            "train/teacher_images": teacher_images,
+            "train/optimizer_steps": epoch_optimizer_steps,
+            "train/domain_views_per_source": encoded_student_images / max(1, epoch_samples),
             "train/samples_per_second": epoch_samples / epoch_elapsed,
-            "train/images_per_second": epoch_samples * (3 if teacher is not None else 2) / epoch_elapsed,
+            "train/images_per_second": encoded_student_images / epoch_elapsed,
             "train/data_time_ms": data_time * 1000 / max(1, len(loader)),
             "train/step_time_ms": step_time * 1000 / max(1, len(loader)),
             "train/bn_frozen": int(cfg.freeze_batch_norm),
@@ -575,7 +590,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             )
             tracker.log_checkpoint(
                 best_path,
-                name=f"vpr-{cfg.backbone}-{cfg.aggregator}-seed{cfg.seed}",
+                name=f"vpr-{cfg.model_family}-{cfg.aggregator}-seed{cfg.seed}",
                 aliases=["best", f"epoch-{epoch + 1}"],
             )
 

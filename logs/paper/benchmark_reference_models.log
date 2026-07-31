@@ -1,0 +1,45 @@
+/home/admin123/diffusion_vpr_test/reference_code/dinov2/dinov2/layers/swiglu_ffn.py:43: UserWarning: xFormers is available (SwiGLU)
+  warnings.warn("xFormers is available (SwiGLU)")
+/home/admin123/diffusion_vpr_test/reference_code/dinov2/dinov2/layers/attention.py:27: UserWarning: xFormers is available (Attention)
+  warnings.warn("xFormers is available (Attention)")
+/home/admin123/diffusion_vpr_test/reference_code/dinov2/dinov2/layers/block.py:33: UserWarning: xFormers is available (Block)
+  warnings.warn("xFormers is available (Block)")
+/home/admin123/miniconda3/envs/img2img-turbo/lib/python3.10/site-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+/home/admin123/diffusion_vpr_test/reference_code/CricaVPR/network.py:51: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.self_attn.batch_first was not True(use batch_first for better inference performance)
+  self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=2) # Cross-image encoder
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/admin123/.netrc.
+wandb: Currently logged in as: ucas-sia-ly (ucas-sia-ly-shenyang-institute-of-automation-chinese-aca) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run 5b9a21e55f9dda97
+wandb: Tracking run with wandb version 0.25.1
+wandb: Run data is saved locally in /home/admin123/diffusion_vpr_test/A2B-LightVPR/runs/reference/wandb/run-20260729_000916-5b9a21e55f9dda97
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run reference-resource-benchmark
+wandb: ⭐️ View project at https://wandb.ai/ucas-sia-ly-shenyang-institute-of-automation-chinese-aca/a2b-lightvpr
+wandb: 🚀 View run at https://wandb.ai/ucas-sia-ly-shenyang-institute-of-automation-chinese-aca/a2b-lightvpr/runs/5b9a21e55f9dda97
+wandb: Detected [huggingface_hub.inference] in use.
+wandb: Use W&B Weave for improved LLM call tracing. Install Weave with `pip install weave` then add `import weave` to the top of your script.
+wandb: For more information, check out the docs at: https://weave-docs.wandb.ai/
+wandb: updating run metadata; uploading console lines 0-1
+wandb: uploading requirements.txt; uploading output.log; uploading wandb-summary.json; uploading config.yaml; uploading wandb-metadata.json
+wandb: uploading output.log; uploading wandb-metadata.json
+wandb: uploading summary, console lines 2-2
+wandb: 
+wandb: Run summary:
+wandb:    resources/boq-dinov2-12288/batch1_p50_ms 12.34562
+wandb:    resources/boq-dinov2-12288/batch1_p95_ms 12.602
+wandb: resources/boq-dinov2-12288/checkpoint_bytes 380916283
+wandb:   resources/boq-dinov2-12288/descriptor_dim 12288
+wandb:       resources/boq-dinov2-12288/parameters 95206560
+wandb:    resources/boq-dinov2-12288/peak_cuda_mib 396.54834
+wandb:    resources/cosplace-r50-512/batch1_p50_ms 3.5605
+wandb:    resources/cosplace-r50-512/batch1_p95_ms 3.68574
+wandb: resources/cosplace-r50-512/checkpoint_bytes 98541311
+wandb:   resources/cosplace-r50-512/descriptor_dim 512
+wandb:                                         +44 ...
+wandb: 
+wandb: 🚀 View run reference-resource-benchmark at: https://wandb.ai/ucas-sia-ly-shenyang-institute-of-automation-chinese-aca/a2b-lightvpr/runs/5b9a21e55f9dda97
+wandb: ⭐️ View project at: https://wandb.ai/ucas-sia-ly-shenyang-institute-of-automation-chinese-aca/a2b-lightvpr
+wandb: Synced 5 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./runs/reference/wandb/run-20260729_000916-5b9a21e55f9dda97/logs
+runs/reference/resource_benchmark.json

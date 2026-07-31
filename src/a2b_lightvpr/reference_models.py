@@ -5,8 +5,12 @@ import hashlib
 import importlib
 import json
 import resource
+import os
+import platform
 import sys
 import time
+import urllib.request
+import urllib.parse
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,16 +20,15 @@ import torch
 import torch.nn.functional as F
 import yaml
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import functional as TF
 
 from .checkpointing import file_sha256, write_json
 from .config import ExperimentConfig
-from .data import benchmark_rows
+from .data import benchmark_rows, read_robotcar_manifest
 from .evaluation import extract_descriptors, positive_indices, retrieval_metrics
 from .tracking import TrainingTracker
 from .transforms import IMAGENET_MEAN, IMAGENET_STD, VPRTransform
-from .vpr.model import build_descriptor_model, eigenplaces_checkpoint, load_initial_weights
+from .vpr.model import build_descriptor_model, eigenplaces_checkpoint
 from .vpr.teachers import build_relation_teacher
 
 
@@ -38,7 +41,10 @@ class SuiteRow:
     condition: str = "night"
 
 
-def protocol_fingerprint(database, queries, radius: float, yaw: float | None) -> str:
+def query_protocol_fingerprint(
+    database, queries, radius: float, yaw: float | None
+) -> str:
+    """Hash retrieval rows and the positive-set definition, but not preprocessing."""
     digest = hashlib.sha256()
     digest.update(f"radius={radius}\0yaw={yaw}\n".encode("utf-8"))
     for role, rows in (("database", database), ("queries", queries)):
@@ -56,6 +62,34 @@ def protocol_fingerprint(database, queries, radius: float, yaw: float | None) ->
             )
             digest.update(b"\n")
     return digest.hexdigest()
+
+
+def evaluation_fingerprint(
+    query_fingerprint: str,
+    *,
+    transform: str,
+    height: int,
+    width: int,
+    interpolation: str = "bicubic",
+    padding: str = "none",
+    normalization: str = "imagenet",
+) -> str:
+    """Hash all conditions that can change descriptors for a fixed query protocol."""
+    payload = {
+        "query_protocol_fingerprint": str(query_fingerprint),
+        "transform": str(transform),
+        "input_size": [int(height), int(width)],
+        "interpolation": str(interpolation),
+        "padding": str(padding),
+        "normalization": str(normalization),
+    }
+    serialized = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+# Compatibility for historical callers and JSON migration. New code should use the
+# explicit query/evaluation names above.
+protocol_fingerprint = query_protocol_fingerprint
 
 
 class FixedResizeTransform:
@@ -127,6 +161,88 @@ def audit_reference_models(path: str | Path, output: str | Path | None = None) -
     return payload
 
 
+def _download_with_resume(url: str, destination: Path, chunk_size: int = 8 * 1024 * 1024) -> None:
+    """Download to a partial file, resuming only when the server honors Range."""
+    existing = destination.stat().st_size if destination.is_file() else 0
+    headers = {"Range": f"bytes={existing}-"} if existing else {}
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request) as response:
+        status = getattr(response, "status", response.getcode())
+        append = existing > 0 and status == 206
+        if append:
+            content_range = response.headers.get("Content-Range", "")
+            if not content_range.startswith(f"bytes {existing}-"):
+                raise RuntimeError(
+                    f"Server returned an invalid resume range: {content_range!r}"
+                )
+        else:
+            existing = 0
+
+        content_length = response.headers.get("Content-Length")
+        total = existing + int(content_length) if content_length else None
+        downloaded = existing
+        next_report = downloaded + 64 * 1024 * 1024
+        mode = "ab" if append else "wb"
+        with destination.open(mode) as handle:
+            while True:
+                chunk = response.read(chunk_size)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                downloaded += len(chunk)
+                if downloaded >= next_report:
+                    if total:
+                        print(
+                            f"Downloaded {downloaded / 1024**2:.1f}/{total / 1024**2:.1f} MiB "
+                            f"({100.0 * downloaded / total:.1f}%)",
+                            flush=True,
+                        )
+                    else:
+                        print(f"Downloaded {downloaded / 1024**2:.1f} MiB", flush=True)
+                    next_report = downloaded + 64 * 1024 * 1024
+        if total is not None and downloaded != total:
+            raise RuntimeError(
+                f"Incomplete checkpoint download: expected {total} bytes, got {downloaded}"
+            )
+
+
+def fetch_reference_model(path: str | Path, model_name: str) -> dict:
+    registry = _registry(path)
+    if model_name not in registry:
+        raise ValueError(f"Unknown reference model: {model_name}")
+    spec = registry[model_name]
+    url = str(spec.get("download_url", ""))
+    checkpoint_value = str(spec.get("checkpoint", ""))
+    if not url or not checkpoint_value:
+        raise ValueError(f"{model_name} does not declare a downloadable checkpoint")
+    checkpoint = Path(checkpoint_value).expanduser()
+    allowed = {
+        "huggingface.co": ("/TobiasRobotics/Patch-NetVLAD/resolve/main/",),
+        "github.com": ("/gmberton/EigenPlaces/releases/download/v1.0/",),
+    }
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.netloc not in allowed or not any(
+        parsed.path.startswith(prefix) for prefix in allowed[parsed.netloc]
+    ):
+        raise ValueError(f"Refusing unapproved reference-model URL: {url}")
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    if not checkpoint.is_file():
+        temporary = checkpoint.with_suffix(checkpoint.suffix + ".part")
+        _download_with_resume(url, temporary)
+        if temporary.stat().st_size == 0:
+            raise RuntimeError("Downloaded checkpoint is empty")
+        os.replace(temporary, checkpoint)
+    metadata = {
+        "model": model_name,
+        "url": url,
+        "file": str(checkpoint.resolve()),
+        "size_bytes": checkpoint.stat().st_size,
+        "sha256": file_sha256(checkpoint),
+    }
+    write_json(metadata, checkpoint.with_suffix(checkpoint.suffix + ".json"))
+    return metadata
+
+
 def _strict_state(model, checkpoint: str | Path):
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
     for key in ("model_state_dict", "state_dict", "model"):
@@ -169,24 +285,23 @@ def _isolated_repo_import(repo: str | Path, module_prefixes: tuple[str, ...]):
 def build_reference_model(spec: dict) -> ReferenceAdapter:
     loader = spec["loader"]
     descriptor_dim = int(spec["descriptor_dim"])
-    if loader == "a2b_gem":
-        model = build_descriptor_model(
-            spec["backbone"], "gem", image_height=spec["native_size"][0],
-            image_width=spec["native_size"][1], pretrained=False,
-        )
-        result = load_initial_weights(model, spec["checkpoint"], "full")
-        if result["missing"] or result["unexpected"]:
-            raise ValueError(f"Reference checkpoint mismatch: {result}")
-        return ReferenceAdapter(model, descriptor_dim)
     if loader == "eigenplaces_hub":
         checkpoint = eigenplaces_checkpoint(descriptor_dim)
         model = build_descriptor_model(
-            "resnet50", "gem", image_height=spec["native_size"][0],
+            "gem", image_height=spec["native_size"][0],
             image_width=spec["native_size"][1], descriptor_dim=descriptor_dim,
-            pretrained=False, init_checkpoint=str(checkpoint), init_checkpoint_scope="full",
+            pretrained=False, init_checkpoint=str(checkpoint),
             model_family="eigenplaces",
         )
         spec["_resolved_checkpoint"] = str(checkpoint)
+        return ReferenceAdapter(model, descriptor_dim)
+    if loader == "netvlad_pytorch":
+        model = build_descriptor_model(
+            "netvlad", image_height=spec["native_size"][0],
+            image_width=spec["native_size"][1], descriptor_dim=descriptor_dim,
+            pretrained=False, init_checkpoint=spec["checkpoint"],
+            model_family="netvlad", num_clusters=int(spec.get("num_clusters", 64)),
+        )
         return ReferenceAdapter(model, descriptor_dim)
     if loader == "nocplace_r50":
         with _isolated_repo_import(spec["repo"], ("nocplace_models",)):
@@ -230,10 +345,142 @@ def build_reference_model(spec: dict) -> ReferenceAdapter:
     raise ValueError(f"Unknown reference loader: {loader}")
 
 
-def _svox_rows(root: Path):
-    base = root / "images" / "test"
+def _reference_checkpoint(spec: dict) -> Path:
+    value = spec.get("_resolved_checkpoint") or spec.get("checkpoint")
+    if not value:
+        raise ValueError("Reference model did not resolve a checkpoint path")
+    return Path(value).expanduser().resolve()
+
+
+def benchmark_reference_models(
+    config: ExperimentConfig,
+    registry_path: str | Path,
+    model_names: tuple[str, ...] = ("all",),
+    *,
+    warmup: int = 20,
+    iterations: int = 100,
+    output: str | Path = "runs/reference/resource_benchmark.json",
+) -> Path:
+    registry = _registry(registry_path)
+    selected = tuple(registry) if "all" in model_names else model_names
+    unknown = sorted(set(selected) - set(registry))
+    if unknown:
+        raise ValueError(f"Unknown reference models: {unknown}")
+    audit = audit_reference_models(registry_path)
+    unavailable = {name: audit["models"][name] for name in selected if not audit["models"][name]["ready"]}
+    if unavailable:
+        raise FileNotFoundError(json.dumps(unavailable, indent=2))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    results = {}
+    for name in selected:
+        spec = registry[name]
+        model = build_reference_model(spec).eval().to(device)
+        height, width = (int(item) for item in spec["native_size"])
+        sample = torch.randn(1, 3, height, width, device=device)
+        use_amp = device.type == "cuda"
+        times = []
+        with torch.inference_mode():
+            for _ in range(warmup):
+                with torch.autocast(device.type, enabled=use_amp):
+                    model.encode(sample)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+                torch.cuda.reset_peak_memory_stats(device)
+            started = time.perf_counter()
+            for _ in range(iterations):
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                tick = time.perf_counter()
+                with torch.autocast(device.type, enabled=use_amp):
+                    model.encode(sample)
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                times.append((time.perf_counter() - tick) * 1000.0)
+            elapsed = time.perf_counter() - started
+            batch_dependence = None
+            if spec.get("batch_dependent"):
+                with torch.autocast(device.type, enabled=use_amp):
+                    alone = model.encode(sample)
+                    mixed = model.encode(torch.cat((sample, torch.flip(sample, (-1,))), dim=0))[:1]
+                batch_dependence = {
+                    "cosine": float(F.cosine_similarity(alone.float(), mixed.float()).item()),
+                    "max_abs": float((alone.float() - mixed.float()).abs().max().item()),
+                }
+        descriptor_dim = int(spec["descriptor_dim"])
+        parameters = sum(parameter.numel() for parameter in model.parameters())
+        checkpoint = _reference_checkpoint(spec)
+        database_memory = {}
+        for count in (1_000, 100_000, 1_000_000):
+            database_memory[str(count)] = {
+                "fp16_gib": count * descriptor_dim * 2 / 1024**3,
+                "fp32_gib": count * descriptor_dim * 4 / 1024**3,
+            }
+        results[name] = {
+            "descriptor_dim": descriptor_dim,
+            "input_size": [height, width],
+            "parameters": parameters,
+            "checkpoint": str(checkpoint),
+            "checkpoint_bytes": checkpoint.stat().st_size,
+            "checkpoint_sha256": file_sha256(checkpoint),
+            "batch1_p50_ms": float(np.percentile(times, 50)),
+            "batch1_p95_ms": float(np.percentile(times, 95)),
+            "batch1_images_per_second": float(iterations / max(elapsed, 1e-9)),
+            "peak_cuda_mib": (
+                float(torch.cuda.max_memory_allocated(device) / 1024**2)
+                if device.type == "cuda" else None
+            ),
+            "process_peak_rss_mib": float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0),
+            "database_descriptor_memory": database_memory,
+            "batch_dependence": batch_dependence,
+        }
+        del model, sample
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+    baseline = results.get("mixvpr-r50-512")
+    if baseline is not None:
+        for metrics in results.values():
+            metrics["relative_to_mixvpr_r50_512"] = {
+                "mixvpr_speedup_x": metrics["batch1_p95_ms"] / baseline["batch1_p95_ms"],
+                "descriptor_storage_saved_fraction": 1.0 - 512.0 / metrics["descriptor_dim"],
+                "peak_cuda_saved_fraction": (
+                    1.0 - baseline["peak_cuda_mib"] / metrics["peak_cuda_mib"]
+                    if metrics["peak_cuda_mib"] else None
+                ),
+            }
+    payload = {
+        "device": str(device),
+        "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else "",
+        "torch": torch.__version__,
+        "python": platform.python_version(),
+        "precision": "fp16" if device.type == "cuda" else "fp32",
+        "warmup": int(warmup),
+        "iterations": int(iterations),
+        "models": results,
+    }
+    output = Path(output)
+    write_json(payload, output)
+    tracker = TrainingTracker(
+        config, job_type="benchmark-reference-models",
+        default_name="reference-resource-benchmark", output_dir=output.parent,
+    )
+    summary = {}
+    for name, metrics in results.items():
+        for key in ("parameters", "descriptor_dim", "checkpoint_bytes", "batch1_p50_ms", "batch1_p95_ms", "peak_cuda_mib"):
+            summary[f"resources/{name}/{key}"] = metrics[key]
+    tracker.summary(summary)
+    tracker.finish()
+    return output
+
+
+def _svox_rows(root: Path, split: str = "test", condition: str = "night"):
+    base = root / "images" / split
+    query_folder = {
+        "night": "queries_night",
+        "day": "queries",
+        "sun": "queries_sun",
+    }[condition]
     outputs = []
-    for folder in ("gallery", "queries_night"):
+    for folder in ("gallery", query_folder):
         rows = []
         for path in sorted((base / folder).glob("*")):
             parts = path.name.split("@")
@@ -243,7 +490,7 @@ def _svox_rows(root: Path):
     return outputs[0], outputs[1]
 
 
-def _msls_rows(root: Path):
+def _msls_rows(root: Path, condition: str = "night"):
     database, queries = [], []
     for city in ("cph", "sf"):
         for role in ("database", "query"):
@@ -255,7 +502,7 @@ def _msls_rows(root: Path):
                     item = SuiteRow(str(path.resolve()), float(row["easting"]), float(row["northing"]))
                     if role == "database" and not night:
                         database.append(item)
-                    elif role == "query" and night:
+                    elif role == "query" and night == (condition == "night"):
                         queries.append(item)
     return database, queries
 
@@ -265,7 +512,9 @@ def _tokyo_rows(root: Path, condition: str):
     for path in sorted((root / "database_gsv_vga").glob("*/*/*.png")):
         easting, northing = path.parent.name.split("_")[:2]
         database.append(SuiteRow(str(path.resolve()), float(easting), float(northing)))
-    condition_code = {"tokyo_night": "N", "tokyo_sunset": "S"}[condition]
+    condition_code = {
+        "tokyo_night": "N", "tokyo_sunset": "S", "tokyo_day": "D"
+    }[condition]
     queries = []
     for metadata in sorted((root / "queries").glob("*.csv")):
         with metadata.open(newline="", encoding="utf-8") as handle:
@@ -278,14 +527,38 @@ def _tokyo_rows(root: Path, condition: str):
     return database, queries
 
 
+def _robotcar_day_rows(manifest: str | Path):
+    rows = read_robotcar_manifest(manifest)
+    database_traverse = "2014-07-14-14-49-50"
+    query_traverse = "2015-08-12-15-04-18"
+    database = [row for row in rows if row.traverse == database_traverse]
+    queries = [row for row in rows if row.traverse == query_traverse]
+    if not database or not queries:
+        raise ValueError(
+            "RobotCar day protocol requires traversals "
+            f"{database_traverse} and {query_traverse}"
+        )
+    return database, queries
+
+
 def suite_rows(config: ExperimentConfig, dataset: str, split: str = "test"):
     if dataset == "robotcar":
         return benchmark_rows(config.data.robotcar_manifest, split)
+    if dataset == "robotcar_day":
+        return _robotcar_day_rows(config.data.robotcar_manifest)
     if dataset == "svox_night":
-        return _svox_rows(Path(config.data.svox_root))
+        return _svox_rows(Path(config.data.svox_root), split, "night")
+    if dataset == "svox_day_val":
+        return _svox_rows(Path(config.data.svox_root), "val", "day")
+    if dataset == "svox_day":
+        return _svox_rows(Path(config.data.svox_root), "test", "day")
+    if dataset == "svox_sun":
+        return _svox_rows(Path(config.data.svox_root), "test", "sun")
     if dataset == "msls_night":
-        return _msls_rows(Path(config.data.msls_root))
-    if dataset in {"tokyo_night", "tokyo_sunset"}:
+        return _msls_rows(Path(config.data.msls_root), "night")
+    if dataset == "msls_day_val":
+        return _msls_rows(Path(config.data.msls_root), "day")
+    if dataset in {"tokyo_night", "tokyo_sunset", "tokyo_day"}:
         return _tokyo_rows(Path(config.data.tokyo_root), dataset)
     raise ValueError(f"Unsupported suite dataset: {dataset}")
 
@@ -339,7 +612,10 @@ def evaluate_vpr_suite(
         transform = VPRTransform(height, width)
     radius = 10.0 if protocol == "project" else 25.0
     yaw = 30.0 if protocol == "project" and dataset == "robotcar" else None
-    batch_size = int(spec.get("native_batch_size", 1)) if transform_name == "native" else 16
+    batch_size = (
+        1 if spec.get("batch_dependent") else
+        int(spec.get("native_batch_size", 1)) if transform_name == "native" else 16
+    )
     metrics = evaluate_dual_encoder(
         database_model, query_model, database, queries, transform, radius, yaw,
         config.evaluation.recalls, device, batch_size,

@@ -181,6 +181,10 @@ def train_generator(config: ExperimentConfig, *, smoke_steps: int | None = None)
         with torch.autocast(device.type, enabled=use_amp):
             fake, source_features = generator(source, return_features=True)
             _, fake_features = generator.encode_features(fake)
+            identity_features = target_features = None
+            if cfg.objective == "qsattn" and cfg.qs_nce_identity:
+                identity, target_features = generator(target, return_features=True)
+                _, identity_features = generator.encode_features(identity)
 
         adversary_loss = None
         if optimizer_adversary is not None:
@@ -201,8 +205,16 @@ def train_generator(config: ExperimentConfig, *, smoke_steps: int | None = None)
         optimizer_g.zero_grad(set_to_none=True)
         with torch.autocast(device.type, enabled=use_amp):
             loss_gan = lsgan_generator_loss(discriminator(fake))
-            loss_content = objective.generator_loss(
+            loss_content_source = objective.generator_loss(
                 source, fake, source_features, fake_features
+            )
+            loss_content_identity = (
+                objective.identity_loss(target_features, identity_features)
+                if target_features is not None and identity_features is not None else None
+            )
+            loss_content = (
+                0.5 * (loss_content_source + loss_content_identity)
+                if loss_content_identity is not None else loss_content_source
             )
             paired_mask = batch["paired"].to(device)
             paired_charbonnier = _paired_charbonnier_loss(
@@ -229,6 +241,7 @@ def train_generator(config: ExperimentConfig, *, smoke_steps: int | None = None)
                 "train/generator_total": float(loss_g.item()),
                 "train/gan": float(loss_gan.item()),
                 "train/content": float(loss_content.item()),
+                "train/content_source": float(loss_content_source.item()),
                 "train/paired_count": int(paired_mask.sum().item()),
                 "train/paired_fraction": float(paired_mask.float().mean().item()),
                 "train/discriminator": float(loss_d.item()),
@@ -238,6 +251,8 @@ def train_generator(config: ExperimentConfig, *, smoke_steps: int | None = None)
             }
             if adversary_loss is not None:
                 log_values["train/negative_generator"] = float(adversary_loss.item())
+            if loss_content_identity is not None:
+                log_values["train/content_identity"] = float(loss_content_identity.item())
             if bool(paired_mask.any()):
                 log_values["train/paired_charbonnier"] = float(paired_charbonnier.item())
             tracker.log(log_values, step=step)

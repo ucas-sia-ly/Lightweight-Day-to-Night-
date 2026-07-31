@@ -53,7 +53,7 @@ def test_convergence_requires_all_learning_rates_at_minimum():
     config = ExperimentConfig(DataConfig("robot.csv", "protocol.json"))
     cfg = replace(
         config.vpr,
-        backbone_lr=1e-4,
+        encoder_lr=1e-4,
         aggregator_lr=1e-3,
         classifier_lr=1e-3,
         scheduler_min_lr_ratio=0.01,
@@ -77,7 +77,7 @@ def test_optimizer_uses_independent_learning_rates():
     config = ExperimentConfig(DataConfig("robot.csv", "protocol.json"))
     cfg = replace(
         config.vpr,
-        backbone_lr=1e-6,
+        encoder_lr=1e-6,
         aggregator_lr=2e-6,
         classifier_lr=3e-4,
     )
@@ -101,10 +101,9 @@ def test_official_warmup_only_trains_classifier_then_unfreezes():
     cfg = replace(
         config.vpr,
         model_family="cosplace",
-        backbone="resnet50",
         classifier_warmup_epochs=1,
         classifier_warmup_lr=1e-3,
-        backbone_lr=1e-6,
+        encoder_lr=1e-6,
         aggregator_lr=1e-6,
         classifier_lr=1e-4,
     )
@@ -151,7 +150,7 @@ def test_cosine_scheduler_reaches_configured_ratio_after_main_budget():
     )
     parameters = [torch.nn.Parameter(torch.ones(())) for _ in range(3)]
     optimizer = torch.optim.SGD([
-        {"params": [parameters[0]], "lr": cfg.backbone_lr},
+        {"params": [parameters[0]], "lr": cfg.encoder_lr},
         {"params": [parameters[1]], "lr": cfg.aggregator_lr},
         {"params": [parameters[2]], "lr": cfg.classifier_lr},
     ])
@@ -160,7 +159,7 @@ def test_cosine_scheduler_reaches_configured_ratio_after_main_budget():
         optimizer.step()
         scheduler.step()
     assert [group["lr"] for group in optimizer.param_groups] == pytest.approx([
-        cfg.backbone_lr * 0.01,
+        cfg.encoder_lr * 0.01,
         cfg.aggregator_lr * 0.01,
         cfg.classifier_lr * 0.01,
     ])

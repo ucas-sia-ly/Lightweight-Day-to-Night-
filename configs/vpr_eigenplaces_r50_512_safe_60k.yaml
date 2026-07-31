@@ -10,7 +10,6 @@ data:
 vpr:
   output_dir: runs/vpr/three_safe/eigenplaces_r50_512_320x480_seed0
   model_family: eigenplaces
-  backbone: resnet50
   aggregator: gem
   descriptor_dim: 512
   image_height: 320
@@ -25,7 +24,7 @@ vpr:
   batch_size: 8
   gradient_accumulation_steps: 2
   workers: 4
-  backbone_lr: 0.000001
+  encoder_lr: 0.000001
   aggregator_lr: 0.000001
   classifier_lr: 0.0001
   classifier_warmup_lr: 0.001
@@ -35,7 +34,6 @@ vpr:
   early_stopping: false
   epoch_one_max_recall_drop: 0.02
   init_checkpoint: eigenplaces://resnet50
-  init_checkpoint_scope: full
   datasets: [msls, robotcar, svox]
   min_class_images_by_dataset: {msls: 4, robotcar: 2, svox: 2}
   sampler: rolling_balanced

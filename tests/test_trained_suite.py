@@ -2,10 +2,38 @@ import json
 from dataclasses import replace
 
 import torch
+import pytest
 
 from a2b_lightvpr.checkpointing import file_sha256
 from a2b_lightvpr.config import DataConfig, ExperimentConfig
 from a2b_lightvpr import trained_suite
+
+
+def test_suite_aliases_preserve_legacy_all_and_add_day_conditions():
+    assert trained_suite.expand_suite_datasets(("all",)) == trained_suite.NIGHT_PROTOCOLS
+    assert trained_suite.expand_suite_datasets(("all-day",)) == trained_suite.DAY_PROTOCOLS
+    assert trained_suite.expand_suite_datasets(("all-conditions",)) == (
+        trained_suite.NIGHT_PROTOCOLS + trained_suite.DAY_PROTOCOLS
+    )
+    assert "robotcar_paper" not in trained_suite.NIGHT_PROTOCOLS
+    assert "robotcar_paper" in trained_suite.SUITE_PROTOCOLS
+
+
+def test_generated_night_database_rejects_sunset_queries(tmp_path):
+    generated = tmp_path / "generated"
+    generated.mkdir()
+    (generated / "manifest.csv").write_text("image_id\nfixture\n", encoding="utf-8")
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_bytes(b"fixture")
+    config = ExperimentConfig(
+        DataConfig("robot.csv", "protocol.json", generated_root=str(generated))
+    )
+    config = replace(
+        config,
+        evaluation=replace(config.evaluation, database_domain="generated_night"),
+    )
+    with pytest.raises(ValueError, match="night queries"):
+        trained_suite.evaluate_trained_suite(config, checkpoint, ("tokyo_sunset",))
 
 
 def test_trained_suite_json_and_tracking_use_same_metrics(tmp_path, monkeypatch):
@@ -92,7 +120,7 @@ def test_trained_suite_reuses_matching_summary_for_tracking(tmp_path, monkeypatc
         "checkpoint_sha256": file_sha256(checkpoint),
         "manifest_sha256": file_sha256(manifest),
         "model_family": config.vpr.model_family,
-        "backbone": config.vpr.backbone,
+        "encoder": config.vpr.model_family,
         "aggregator": config.vpr.aggregator,
         "descriptor_dim": 512,
         "initialization": "fixture",
@@ -127,7 +155,7 @@ def test_trained_suite_reuses_matching_summary_for_tracking(tmp_path, monkeypatc
     monkeypatch.setattr(trained_suite, "TrainingTracker", Tracker)
     monkeypatch.setattr(trained_suite, "suite_rows", lambda *args: ([], []))
     monkeypatch.setattr(
-        trained_suite, "protocol_fingerprint", lambda *args: "fixture-protocol"
+        trained_suite, "query_protocol_fingerprint", lambda *args: "fixture-protocol"
     )
     monkeypatch.setattr(
         trained_suite,
@@ -140,3 +168,57 @@ def test_trained_suite_reuses_matching_summary_for_tracking(tmp_path, monkeypatc
     assert result == suite_dir / "summary.json"
     assert captured["test/robotcar_project/recall_at_1"] == 0.8
     assert captured["suite/latency_p95_ms"] == 2.0
+
+
+def test_trained_suite_incrementally_adds_day_protocol_without_losing_night(tmp_path, monkeypatch):
+    generated = tmp_path / "generated"
+    generated.mkdir()
+    manifest = generated / "manifest.csv"
+    manifest.write_text("image_id\nfixture\n", encoding="utf-8")
+    checkpoint = tmp_path / "model_best.pt"
+    checkpoint.write_bytes(b"fixture-checkpoint")
+    output_dir = tmp_path / "run"
+    suite_dir = output_dir / "final_suite"
+    suite_dir.mkdir(parents=True)
+    config = ExperimentConfig(DataConfig("robot.csv", "protocol.json", generated_root=str(generated)))
+    config = replace(config, vpr=replace(config.vpr, output_dir=str(output_dir), workers=0))
+    old_metrics = {
+        "recalls": {"1": 0.8, "5": 0.9, "10": 1.0}, "mrr": 0.85,
+        "valid_queries": 1, "protocol_fingerprint": "old",
+    }
+    payload = {
+        "checkpoint_sha256": file_sha256(checkpoint),
+        "manifest_sha256": file_sha256(manifest), "database_domain": "day",
+        "database_manifest_sha256": {}, "model_family": config.vpr.model_family,
+        "encoder": config.vpr.model_family, "aggregator": config.vpr.aggregator,
+        "descriptor_dim": 512, "initialization": "fixture", "input_size": [256, 384],
+        "checkpoint_epoch": 2,
+        "benchmark": {"parameters": 10, "peak_cuda_mib": 20.0,
+                      "latency_ms": {"p50": 1.0, "p95": 2.0}},
+        "datasets": {"robotcar_project": old_metrics},
+    }
+    (suite_dir / "summary.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    class Model(torch.nn.Module):
+        descriptor_dim = 512
+        def encode(self, images):
+            return torch.ones(images.shape[0], 512)
+    class Tracker:
+        def __init__(self, *args, **kwargs): pass
+        def summary(self, values): pass
+        def finish(self): pass
+    monkeypatch.setattr(trained_suite, "TrainingTracker", Tracker)
+    monkeypatch.setattr(trained_suite, "load_vpr_model", lambda *args: (Model(), {"epoch": 2}, checkpoint))
+    monkeypatch.setattr(trained_suite, "suite_rows", lambda *args: ([object()], [object()]))
+    monkeypatch.setattr(trained_suite, "query_protocol_fingerprint", lambda *args: "new-day")
+    monkeypatch.setattr(trained_suite, "evaluate_dual_encoder", lambda *args, **kwargs: {
+        "recalls": {"1": 0.7, "5": 0.9, "10": 1.0}, "mrr": 0.75,
+        "valid_queries": 1, "valid_by_query": [1],
+        "success_by_k": {"1": [1], "5": [1], "10": [1]},
+    })
+    result = trained_suite.evaluate_trained_suite(config, checkpoint, ("msls_day_val",))
+    updated = json.loads(result.read_text(encoding="utf-8"))
+    assert updated["datasets"]["robotcar_project"] == old_metrics
+    assert updated["datasets"]["msls_day_val"]["protocol_fingerprint"] == "new-day"
+    assert updated["datasets"]["msls_day_val"]["query_protocol_fingerprint"] == "new-day"
+    assert len(updated["datasets"]["msls_day_val"]["evaluation_fingerprint"]) == 64

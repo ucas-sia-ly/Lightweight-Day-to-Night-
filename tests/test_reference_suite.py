@@ -96,7 +96,10 @@ def test_reference_suite_uses_shared_protocol_and_cache(tmp_path, monkeypatch):
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert built == [str(checkpoint), str(database_checkpoint)]
     assert calls == [(10.0, 30.0)]
-    assert len(payload["datasets"]["robotcar_project"]["protocol_fingerprint"]) == 64
+    metrics = payload["datasets"]["robotcar_project"]
+    assert len(metrics["query_protocol_fingerprint"]) == 64
+    assert len(metrics["evaluation_fingerprint"]) == 64
+    assert metrics["protocol_fingerprint"] == metrics["query_protocol_fingerprint"]
 
     monkeypatch.setattr(
         reference_suite,
@@ -136,3 +139,42 @@ def test_compare_suite_bootstrap_requires_same_protocol(tmp_path):
         reference_suite.compare_suite_bootstrap(
             candidate, baseline, tmp_path / "invalid.json", samples=100,
         )
+
+
+def test_compare_suite_bootstrap_marks_preprocessing_control(tmp_path):
+    def summary(path, evaluation):
+        path.write_text(json.dumps({"datasets": {"robotcar_project": {
+            "query_protocol_fingerprint": "same-query",
+            "evaluation_fingerprint": evaluation,
+            "recalls": {"1": 1.0},
+            "success_by_k": {"1": [1, 1]},
+        }}}), encoding="utf-8")
+
+    candidate, baseline = tmp_path / "candidate.json", tmp_path / "baseline.json"
+    summary(candidate, "fit-pad")
+    summary(baseline, "direct-resize")
+    output = reference_suite.compare_suite_bootstrap(
+        candidate, baseline, tmp_path / "comparison.json", samples=10,
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["datasets"]["robotcar_project"]["strictly_controlled_preprocessing"] is False
+
+
+def test_compare_suite_bootstrap_excludes_invalid_queries(tmp_path):
+    def summary(path, success):
+        path.write_text(json.dumps({"datasets": {"robotcar_project": {
+            "query_protocol_fingerprint": "same-query",
+            "recalls": {"1": success[0]},
+            "valid_by_query": [1, 0],
+            "success_by_k": {"1": success},
+        }}}), encoding="utf-8")
+
+    candidate, baseline = tmp_path / "candidate.json", tmp_path / "baseline.json"
+    summary(candidate, [1, 0])
+    summary(baseline, [0, 1])
+    output = reference_suite.compare_suite_bootstrap(
+        candidate, baseline, tmp_path / "comparison.json", samples=20,
+    )
+    item = json.loads(output.read_text(encoding="utf-8"))["datasets"]["robotcar_project"]
+    assert item["valid_queries"] == 1
+    assert item["paired_bootstrap_r1"]["delta"] == 1.0
