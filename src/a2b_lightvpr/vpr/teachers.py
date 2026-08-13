@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import torch
@@ -8,6 +9,9 @@ from torch import nn
 
 
 def _load_dinov2(repo: str, model_name: str = "dinov2_vitb14") -> nn.Module:
+    # DINOv2 selects xFormers at import time, but its kernels are CUDA-only.
+    if not torch.cuda.is_available():
+        os.environ.setdefault("XFORMERS_DISABLED", "1")
     root = Path(repo).expanduser().resolve()
     if not (root / "hubconf.py").is_file():
         raise FileNotFoundError(f"Local DINOv2 repository is incomplete: {root}")
@@ -111,72 +115,7 @@ class SaladTeacher(nn.Module):
         return self.aggregator(self.backbone(images))
 
 
-class _BoQBackbone(nn.Module):
-    def __init__(self, repo: str):
-        super().__init__()
-        self.dino = _load_dinov2(repo)
-
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
-        batch, _, height, width = images.shape
-        tokens = self.dino.prepare_tokens_with_masks(images)
-        for block in self.dino.blocks:
-            tokens = block(tokens)
-        patches = tokens[:, 1:].permute(0, 2, 1)
-        return patches.reshape(batch, 768, height // 14, width // 14)
-
-
-class _BoQBlock(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.encoder = nn.TransformerEncoderLayer(384, 6, 1536, batch_first=True, dropout=0.0)
-        self.queries = nn.Parameter(torch.randn(1, 64, 384))
-        self.self_attn = nn.MultiheadAttention(384, 6, batch_first=True)
-        self.norm_q = nn.LayerNorm(384)
-        self.cross_attn = nn.MultiheadAttention(384, 6, batch_first=True)
-        self.norm_out = nn.LayerNorm(384)
-
-    def forward(self, value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        value = self.encoder(value)
-        queries = self.queries.repeat(value.shape[0], 1, 1)
-        queries = self.norm_q(queries + self.self_attn(queries, queries, queries)[0])
-        output = self.norm_out(self.cross_attn(queries, value, value)[0])
-        return value, output
-
-
-class _BoQHead(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.proj_c = nn.Conv2d(768, 384, 3, padding=1)
-        self.norm_input = nn.LayerNorm(384)
-        self.boqs = nn.ModuleList((_BoQBlock(), _BoQBlock()))
-        self.fc = nn.Linear(128, 32)
-
-    def forward(self, value: torch.Tensor) -> torch.Tensor:
-        value = self.norm_input(self.proj_c(value).flatten(2).permute(0, 2, 1))
-        outputs = []
-        for block in self.boqs:
-            value, output = block(value)
-            outputs.append(output)
-        descriptor = self.fc(torch.cat(outputs, dim=1).permute(0, 2, 1)).flatten(1)
-        return F.normalize(descriptor, dim=-1)
-
-
-class BoQTeacher(nn.Module):
-    output_dim = 12_288
-
-    def __init__(self, repo: str, checkpoint: str):
-        super().__init__()
-        self.backbone = _BoQBackbone(repo)
-        self.aggregator = _BoQHead()
-        _strict_load(self, checkpoint, "BoQ")
-
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
-        return self.aggregator(self.backbone(images))
-
-
 def build_relation_teacher(name: str, repo: str, checkpoint: str) -> nn.Module:
-    constructors = {"salad": SaladTeacher, "boq": BoQTeacher}
-    if name not in constructors:
-        raise ValueError(f"Strong relation teacher must be salad or boq, got {name!r}")
-    model = constructors[name](repo, checkpoint)
-    return model.eval().requires_grad_(False)
+    if name != "salad":
+        raise ValueError(f"The CDND teacher must be salad, got {name!r}")
+    return SaladTeacher(repo, checkpoint).eval().requires_grad_(False)

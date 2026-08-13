@@ -17,36 +17,8 @@ from .reference_models import (
     query_protocol_fingerprint,
     suite_rows,
 )
-from .tracking import TrainingTracker
 from .trained_suite import SUITE_PROTOCOLS, expand_suite_datasets
 from .transforms import VPRTransform
-from .evaluation import paired_bootstrap
-
-
-def _tracking_values(payload: dict) -> dict:
-    values = {
-        "reference_suite/model": payload["model"],
-        "reference_suite/database_encoder": payload["database_encoder"],
-        "reference_suite/transform": payload["transform"],
-        "reference_suite/query_checkpoint_sha256": payload["query_checkpoint_sha256"],
-    }
-    for name, metrics in payload["datasets"].items():
-        namespace = SUITE_PROTOCOLS[name][4]
-        prefix = f"{namespace}/{name}"
-        for recall, value in metrics["recalls"].items():
-            values[f"{prefix}/recall_at_{recall}"] = value
-        values[f"{prefix}/mrr"] = metrics["mrr"]
-        values[f"{prefix}/valid_queries"] = metrics["valid_queries"]
-        query_fingerprint = metrics.get(
-            "query_protocol_fingerprint", metrics.get("protocol_fingerprint")
-        )
-        if query_fingerprint:
-            values[f"{prefix}/query_protocol_fingerprint"] = query_fingerprint
-        if metrics.get("evaluation_fingerprint"):
-            values[f"{prefix}/evaluation_fingerprint"] = metrics[
-                "evaluation_fingerprint"
-            ]
-    return values
 
 
 def evaluate_reference_suite(
@@ -118,13 +90,6 @@ def evaluate_reference_suite(
         "extraction_batch_size": configured_batch_size,
         "batch_dependent_mode": bool(spec.get("batch_dependent") and configured_batch_size > 1),
     }
-    tracker = TrainingTracker(
-        config,
-        job_type="evaluate-reference-suite",
-        default_name=f"suite-{model_name}-{database_encoder}-{transform_name}",
-        output_dir=root,
-        run_key=f"{model_name}:{database_encoder}:{transform_name}",
-    )
     cached_payload = None
     if summary_path.is_file():
         cached = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -158,8 +123,6 @@ def evaluate_reference_suite(
             if set(selected).issubset(cached.get("datasets", {})):
                 if changed:
                     write_json(cached, summary_path)
-                tracker.summary(_tracking_values(cached))
-                tracker.finish()
                 return summary_path
             cached_payload = cached
 
@@ -243,65 +206,4 @@ def evaluate_reference_suite(
         payload["datasets"][name] = metrics
         write_json(metrics, root / name / "metrics.json")
     write_json(payload, summary_path)
-    tracker.summary(_tracking_values(payload))
-    tracker.finish()
     return summary_path
-
-
-def compare_suite_bootstrap(
-    candidate_path: str | Path, baseline_path: str | Path, output: str | Path,
-    *, samples: int = 10_000,
-) -> Path:
-    candidate = json.loads(Path(candidate_path).read_text(encoding="utf-8"))
-    baseline = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
-    candidate_sets = candidate.get("datasets", {})
-    baseline_sets = baseline.get("datasets", {})
-    names = sorted(set(candidate_sets) & set(baseline_sets))
-    if not names:
-        raise ValueError("Suite summaries have no common datasets")
-    comparisons = {}
-    for name in names:
-        first, second = candidate_sets[name], baseline_sets[name]
-        first_query = first.get(
-            "query_protocol_fingerprint", first.get("protocol_fingerprint")
-        )
-        second_query = second.get(
-            "query_protocol_fingerprint", second.get("protocol_fingerprint")
-        )
-        if first_query != second_query:
-            raise ValueError(f"Query protocol fingerprint mismatch for {name}")
-        first_success = first["success_by_k"]["1"]
-        second_success = second["success_by_k"]["1"]
-        first_valid = first.get("valid_by_query", [1] * len(first_success))
-        second_valid = second.get("valid_by_query", [1] * len(second_success))
-        if first_valid != second_valid:
-            raise ValueError(f"Valid-query mask mismatch for {name}")
-        valid_indices = [index for index, valid in enumerate(first_valid) if valid]
-        if not valid_indices:
-            raise ValueError(f"No valid queries for paired bootstrap on {name}")
-        first_valid_success = [first_success[index] for index in valid_indices]
-        second_valid_success = [second_success[index] for index in valid_indices]
-        comparisons[name] = {
-            "query_protocol_fingerprint": first_query,
-            "evaluation_fingerprint_candidate": first.get("evaluation_fingerprint"),
-            "evaluation_fingerprint_baseline": second.get("evaluation_fingerprint"),
-            "strictly_controlled_preprocessing": bool(
-                first.get("evaluation_fingerprint")
-                and first.get("evaluation_fingerprint") == second.get("evaluation_fingerprint")
-            ),
-            "protocol_fingerprint": first_query,
-            "valid_queries": len(valid_indices),
-            "candidate_recall_at_1": first["recalls"]["1"],
-            "baseline_recall_at_1": second["recalls"]["1"],
-            "paired_bootstrap_r1": paired_bootstrap(
-                first_valid_success, second_valid_success, samples,
-            ),
-        }
-    payload = {
-        "candidate": str(Path(candidate_path).resolve()),
-        "baseline": str(Path(baseline_path).resolve()),
-        "bootstrap_samples": int(samples), "datasets": comparisons,
-    }
-    output = Path(output)
-    write_json(payload, output)
-    return output

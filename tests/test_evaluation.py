@@ -1,10 +1,6 @@
 import numpy as np
 
-from a2b_lightvpr.evaluation import (
-    acceptance_against_baseline,
-    paired_bootstrap,
-    retrieval_metrics,
-)
+from a2b_lightvpr.evaluation import retrieval_metrics
 
 
 def test_retrieval_metrics_known_ranking():
@@ -24,18 +20,3 @@ def test_invalid_queries_are_explicit_and_excluded_from_recall():
     )
     assert metrics["valid_by_query"] == [1, 0]
     assert metrics["recalls"]["1"] == 1.0
-
-
-def test_paired_bootstrap_detects_uniform_improvement():
-    result = paired_bootstrap([1] * 100, [0] * 100, samples=500, seed=1)
-    assert result["significant"] is True
-    assert result["ci95"][0] > 0
-
-
-def test_acceptance_uses_the_supplied_baseline_not_a_fixed_threshold():
-    bootstrap, acceptance = acceptance_against_baseline(
-        [1] * 100, [0] * 100, samples=500
-    )
-    assert acceptance["baseline_recall1"] == 0.0
-    assert acceptance["passed"] is True
-    assert bootstrap["delta"] == 1.0

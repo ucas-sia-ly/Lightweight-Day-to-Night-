@@ -7,7 +7,6 @@ import torch
 
 from .checkpointing import file_sha256, write_json
 from .config import ExperimentConfig
-from .generator.translate import load_translated_database
 from .reference_models import (
     evaluate_dual_encoder,
     evaluation_fingerprint,
@@ -15,14 +14,12 @@ from .reference_models import (
     suite_rows,
 )
 from .runtime import benchmark_model, load_vpr_model
-from .tracking import TrainingTracker
 from .transforms import VPRTransform
 from .vpr.model import resolve_initial_checkpoint
 
 
 SUITE_PROTOCOLS = {
     "robotcar_project": ("robotcar", "test", 10.0, 30.0, "test"),
-    "robotcar_paper": ("robotcar", "test", 25.0, None, "test"),
     "svox_night": ("svox_night", "test", 25.0, None, "test"),
     "msls_night": ("msls_night", "val", 25.0, None, "validation"),
     "tokyo_night": ("tokyo_night", "test", 25.0, None, "test"),
@@ -42,38 +39,20 @@ DAY_PROTOCOLS = (
     "msls_day_val", "svox_day_val", "robotcar_day", "svox_day", "svox_sun",
     "tokyo_day",
 )
-GENERATED_NIGHT_PROTOCOLS = tuple(name for name in NIGHT_PROTOCOLS if name != "tokyo_sunset")
-
-
-def expand_suite_datasets(datasets: tuple[str, ...], *, generated_night: bool = False):
+def expand_suite_datasets(datasets: tuple[str, ...]):
     aliases = set(datasets)
     if "all-conditions" in aliases:
         return NIGHT_PROTOCOLS + DAY_PROTOCOLS
     if "all-day" in aliases:
         return DAY_PROTOCOLS
     if "all" in aliases:
-        return GENERATED_NIGHT_PROTOCOLS if generated_night else NIGHT_PROTOCOLS
+        return NIGHT_PROTOCOLS
     return datasets
 
 
 def _evaluation_rows(config: ExperimentConfig, dataset: str, split: str):
     database, queries = suite_rows(config, dataset, split)
-    manifest_sha256 = ""
-    if config.evaluation.database_domain == "generated_night":
-        database, manifest_sha256 = load_translated_database(config, dataset, database)
-    return database, queries, manifest_sha256
-
-
-def _database_manifest_hashes(config: ExperimentConfig, selected: tuple[str, ...]) -> dict:
-    if config.evaluation.database_domain == "day":
-        return {}
-    hashes = {}
-    for name in selected:
-        dataset, split, _, _, _ = SUITE_PROTOCOLS[name]
-        database, _, digest = _evaluation_rows(config, dataset, split)
-        del database
-        hashes[dataset] = digest
-    return hashes
+    return database, queries, ""
 
 
 def _suite_summary_values(payload: dict, selected: tuple[str, ...]) -> dict:
@@ -114,32 +93,16 @@ def evaluate_trained_suite(
     checkpoint: str | Path,
     datasets: tuple[str, ...] = ("all",),
 ) -> Path:
-    selected = expand_suite_datasets(
-        datasets, generated_night=config.evaluation.database_domain == "generated_night"
-    )
-    if config.evaluation.database_domain == "generated_night" and any(
-        name not in GENERATED_NIGHT_PROTOCOLS for name in selected
-    ):
-        raise ValueError("generated_night database evaluation requires night queries")
+    selected = expand_suite_datasets(datasets)
     unknown = sorted(set(selected) - set(SUITE_PROTOCOLS))
     if unknown:
         raise ValueError(f"Unknown trained-suite datasets: {unknown}")
     checkpoint_path = Path(checkpoint).expanduser()
-    suffix = (
-        "final_suite" if config.evaluation.database_domain == "day"
-        else "final_suite_generated_night"
-    )
-    output_dir = Path(config.vpr.output_dir) / suffix
+    output_dir = Path(config.vpr.output_dir) / "final_suite"
     summary_path = output_dir / "summary.json"
     checkpoint_sha256 = file_sha256(checkpoint_path)
     manifest_sha256 = file_sha256(Path(config.data.generated_root) / "manifest.csv")
-    database_manifest_sha256 = _database_manifest_hashes(config, selected)
-    tracker = TrainingTracker(
-        config,
-        job_type="evaluate-trained-suite",
-        default_name=f"suite-{config.vpr.model_family}-{config.vpr.descriptor_dim}",
-        output_dir=output_dir,
-    )
+    database_manifest_sha256 = {}
     cached_payload = None
     if summary_path.is_file():
         cached = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -184,8 +147,6 @@ def evaluate_trained_suite(
             if set(selected).issubset(cached.get("datasets", {})):
                 if changed:
                     write_json(cached, summary_path)
-                tracker.summary(_suite_summary_values(cached, selected))
-                tracker.finish()
                 return summary_path
             cached_payload = cached
 
@@ -215,7 +176,7 @@ def evaluate_trained_suite(
         payload["initial_checkpoint_sha256"] = file_sha256(initial_checkpoint)
     if "benchmark" not in payload:
         payload["benchmark"] = benchmark_model(
-            config, checkpoint_path, warmup=10, iterations=100, track=False
+            config, checkpoint_path, warmup=10, iterations=100
         )
     for name in selected:
         if name in payload["datasets"]:
@@ -268,6 +229,4 @@ def evaluate_trained_suite(
         payload["datasets"][name] = metrics
         write_json(metrics, output_dir / name / "metrics.json")
     write_json(payload, summary_path)
-    tracker.summary(_suite_summary_values(payload, selected))
-    tracker.finish()
     return summary_path

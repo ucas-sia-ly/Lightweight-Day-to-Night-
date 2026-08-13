@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 import numpy as np
@@ -81,50 +80,6 @@ def retrieval_metrics(
     }
 
 
-def paired_bootstrap(
-    candidate_success: list[int],
-    baseline_success: list[int],
-    samples: int = 10_000,
-    seed: int = 0,
-) -> dict:
-    candidate = np.asarray(candidate_success, dtype=np.float64)
-    baseline = np.asarray(baseline_success, dtype=np.float64)
-    if candidate.shape != baseline.shape:
-        raise ValueError("Paired bootstrap inputs must contain the same queries")
-    differences = candidate - baseline
-    rng = np.random.default_rng(seed)
-    draws = np.empty(samples, dtype=np.float64)
-    for start in range(0, samples, 256):
-        batch = min(256, samples - start)
-        indices = rng.integers(0, len(differences), size=(batch, len(differences)))
-        draws[start : start + batch] = differences[indices].mean(axis=1)
-    lower, upper = np.quantile(draws, [0.025, 0.975])
-    return {
-        "delta": float(differences.mean()),
-        "ci95": [float(lower), float(upper)],
-        "significant": bool(lower > 0.0),
-        "samples": int(samples),
-    }
-
-
-def acceptance_against_baseline(
-    candidate_success: list[int], baseline_success: list[int], samples: int
-) -> tuple[dict, dict]:
-    bootstrap = paired_bootstrap(candidate_success, baseline_success, samples)
-    candidate_recall1 = float(np.mean(candidate_success))
-    baseline_recall1 = float(np.mean(baseline_success))
-    acceptance = {
-        "baseline_recall1": baseline_recall1,
-        "recall1_above_baseline": bool(candidate_recall1 > baseline_recall1),
-        "ci95_lower_above_zero": bool(bootstrap["ci95"][0] > 0.0),
-    }
-    acceptance["passed"] = bool(
-        acceptance["recall1_above_baseline"]
-        and acceptance["ci95_lower_above_zero"]
-    )
-    return bootstrap, acceptance
-
-
 def extract_descriptors(model, rows, transform, device, batch_size=64, workers=4):
     dataset = ImagePathDataset(rows, transform)
     loader = DataLoader(dataset, batch_size=batch_size, num_workers=workers, pin_memory=device.type == "cuda")
@@ -148,7 +103,6 @@ def evaluate_model(
     batch_size: int = 64,
     workers: int = 4,
     output_path: str | Path | None = None,
-    baseline_path: str | Path | None = None,
 ) -> dict:
     database, queries = benchmark_rows(robotcar_manifest, split)
     database_descriptors = extract_descriptors(model, database, transform, device, batch_size, workers)
@@ -165,33 +119,6 @@ def evaluate_model(
         positive_yaw_deg=evaluation.positive_yaw_deg,
         descriptor_dim=model.descriptor_dim,
     )
-    if baseline_path:
-        import json
-
-        baseline = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
-        expected_protocol = {
-            "split": split,
-            "positive_radius_m": evaluation.positive_radius_m,
-            "positive_yaw_deg": evaluation.positive_yaw_deg,
-            "total_queries": metrics["total_queries"],
-        }
-        mismatches = {
-            key: (baseline.get(key), value)
-            for key, value in expected_protocol.items()
-            if baseline.get(key) != value
-        }
-        if mismatches:
-            raise ValueError(f"Baseline protocol does not match candidate: {mismatches}")
-        valid = np.asarray(metrics["valid_by_query"], dtype=bool)
-        candidate_success = np.asarray(metrics["success_by_k"]["1"])[valid].tolist()
-        baseline_success = np.asarray(baseline["success_by_k"]["1"])[valid].tolist()
-        bootstrap, acceptance = acceptance_against_baseline(
-            candidate_success,
-            baseline_success,
-            evaluation.bootstrap_samples,
-        )
-        metrics["paired_bootstrap_r1"] = bootstrap
-        metrics["acceptance"] = acceptance
     if output_path:
         write_json(metrics, output_path)
     return metrics

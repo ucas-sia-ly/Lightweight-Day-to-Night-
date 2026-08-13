@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import math
 import random
 import resource
@@ -16,28 +15,39 @@ from tqdm.auto import tqdm
 from ..checkpointing import (
     SCHEMA_VERSION,
     atomic_torch_save,
+    checkpoint_config_matches,
     data_fingerprints,
-    file_sha256,
     restore_rng_state,
     rng_state,
     write_json,
 )
 from ..config import ExperimentConfig
-from ..data import CoverageBalancedSampler, PairedVPRDataset, RollingBalancedSampler
+from ..data import (
+    CoverageBalancedSampler,
+    PKBalancedBatchSampler,
+    PairedVPRDataset,
+    RollingBalancedSampler,
+)
 from ..evaluation import evaluate_model
-from ..tracking import TrainingTracker
 from ..transforms import VPRTransform
-from .losses import MarginCosineClassifier, configurable_vpr_loss, vpr_training_loss
+from .losses import (
+    MarginCosineClassifier,
+    cross_domain_neighborhood_loss,
+    day_fake_classification_loss,
+    mined_route_contrastive_loss,
+)
 from .model import build_descriptor_model, resolve_initial_checkpoint
+from .neighborhood import DatasetNeighborhoodQueue
+from .route_mining import RouteMiningCache
 from .teacher_cache import TeacherDescriptorCache
 
 
-def _set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+def _set_fixed_random_state() -> None:
+    random.seed(0)
+    np.random.seed(0)
+    torch.manual_seed(0)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+        torch.cuda.manual_seed_all(0)
 
 
 def optimizer_base_lrs(cfg) -> list[float]:
@@ -127,7 +137,6 @@ def _inference_checkpoint(
     epoch_zero_score,
     model,
     generated_manifest,
-    preservation_teacher_fingerprint,
 ):
     return {
         "schema_version": SCHEMA_VERSION,
@@ -136,9 +145,9 @@ def _inference_checkpoint(
         "val_recall1": float(score),
         "epoch_zero_recall1": float(epoch_zero_score),
         "config_fingerprint": config.fingerprint(),
+        "descriptor_dim": int(config.vpr.descriptor_dim),
         "data_fingerprints": data_fingerprints(config, generated=generated_manifest),
         "model": model.state_dict(),
-        "preservation_teacher_fingerprint": preservation_teacher_fingerprint,
     }
 
 
@@ -155,9 +164,11 @@ def _vpr_checkpoint(
     scaler,
     generated_manifest,
     teacher_cache_fingerprint,
-    preservation_teacher_fingerprint,
     optimizer_step,
     samples_seen,
+    sampler_state=None,
+    relation_queue_state=None,
+    route_mining_fingerprint="",
 ):
     return {
         "schema_version": SCHEMA_VERSION,
@@ -171,6 +182,7 @@ def _vpr_checkpoint(
         "warmup_completed": bool(epoch >= config.vpr.classifier_warmup_epochs),
         "config_fingerprint": config.fingerprint(),
         "config": config.as_dict(),
+        "descriptor_dim": int(config.vpr.descriptor_dim),
         "data_fingerprints": data_fingerprints(config, generated=generated_manifest),
         "model": model.state_dict(),
         "classifier": classifier.state_dict(),
@@ -179,7 +191,9 @@ def _vpr_checkpoint(
         "scaler": scaler.state_dict(),
         "rng": rng_state(),
         "teacher_cache_fingerprint": teacher_cache_fingerprint,
-        "preservation_teacher_fingerprint": preservation_teacher_fingerprint,
+        "sampler_state": sampler_state,
+        "relation_queue_state": relation_queue_state,
+        "route_mining_fingerprint": route_mining_fingerprint,
     }
 
 
@@ -197,27 +211,49 @@ def _evaluate_validation(model, config, transform, device, output_path):
     )
 
 
+def export_vpr_inference_checkpoint(
+    config: ExperimentConfig,
+    training_checkpoint: str | Path,
+    output: str | Path,
+) -> Path:
+    """Strip all training-only state while preserving model tensors exactly."""
+    training_checkpoint = Path(training_checkpoint).expanduser().resolve()
+    output = Path(output).expanduser().resolve()
+    if output.exists():
+        raise FileExistsError(f"Refusing to overwrite inference checkpoint: {output}")
+    state = torch.load(training_checkpoint, map_location="cpu", weights_only=False)
+    if state.get("kind") != "vpr_training_state":
+        raise ValueError("Expected a VPR training-state checkpoint")
+    if not checkpoint_config_matches(state, config, ("data", "vpr", "evaluation")):
+        raise ValueError("Training checkpoint config does not match the current config")
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "vpr_inference",
+        "epoch": int(state["epoch"]),
+        "val_recall1": float(state.get("best_val_recall1", -1.0)),
+        "epoch_zero_recall1": float(state.get("epoch_zero_recall1", -1.0)),
+        "config_fingerprint": state["config_fingerprint"],
+        "descriptor_dim": int(config.vpr.descriptor_dim),
+        "data_fingerprints": state.get("data_fingerprints", {}),
+        "model": state["model"],
+    }
+    atomic_torch_save(payload, output)
+    return output
+
+
 def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> Path:
     cfg = config.vpr
-    _set_seed(cfg.seed)
+    _set_fixed_random_state()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(config.as_dict(), output_dir / "resolved_config.json")
-    tracker = TrainingTracker(
-        config,
-        job_type="train-vpr",
-        default_name=(
-            f"vpr-{cfg.model_family}-{cfg.aggregator}-{cfg.image_height}x{cfg.image_width}"
-            f"-{cfg.loss_profile}-seed{cfg.seed}"
-        ),
-        output_dir=output_dir,
-    )
     transform = VPRTransform(cfg.image_height, cfg.image_width)
     generated_manifest = Path(config.data.generated_root) / "manifest.csv"
     teacher_cache = (
         TeacherDescriptorCache(config, generated_manifest)
-        if cfg.loss_profile == "v3" and cfg.relation_teacher in {"salad", "boq"}
+        if cfg.cross_domain_aux == "cross_domain_relation"
+        and cfg.relation_teacher == "salad"
         else None
     )
     dataset = PairedVPRDataset(
@@ -229,14 +265,21 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         datasets=cfg.datasets,
         teacher_cache=teacher_cache,
     )
-    if cfg.sampler == "rolling_balanced":
-        sampler = RollingBalancedSampler(dataset.rows, cfg.dataset_epoch_quotas, cfg.seed)
+    if cfg.sampler == "pk_balanced":
+        sampler = PKBalancedBatchSampler(
+            dataset.rows,
+            cfg.dataset_epoch_quotas,
+            cfg.pk_places_per_batch,
+            cfg.pk_images_per_place,
+        )
+    elif cfg.sampler == "rolling_balanced":
+        sampler = RollingBalancedSampler(dataset.rows, cfg.dataset_epoch_quotas)
     elif cfg.sampler == "coverage_balanced":
-        sampler = CoverageBalancedSampler(dataset.rows, cfg.dataset_epoch_quotas, cfg.seed)
+        sampler = CoverageBalancedSampler(dataset.rows, cfg.dataset_epoch_quotas)
     else:
         sampler = WeightedRandomSampler(
             dataset.balanced_weights(), cfg.samples_per_epoch, replacement=True,
-            generator=torch.Generator().manual_seed(cfg.seed),
+            generator=torch.Generator().manual_seed(0),
         )
 
     initial_checkpoint = resolve_initial_checkpoint(cfg.init_checkpoint, cfg.descriptor_dim)
@@ -250,21 +293,18 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         model_family=cfg.model_family,
         num_clusters=cfg.num_clusters,
     ).to(device)
-    needs_initial_teacher = (
-        cfg.preservation_teacher == "initialization"
-        or cfg.loss_profile == "v1"
-        or cfg.relation_teacher == "self"
-        or cfg.cross_domain_aux == "ikt"
-    )
-    teacher = (
-        copy.deepcopy(model).eval().requires_grad_(False)
-        if needs_initial_teacher else None
-    )
-    preservation_teacher_fingerprint = (
-        file_sha256(initial_checkpoint)
-        if cfg.preservation_teacher == "initialization" and initial_checkpoint
-        else config.fingerprint() if cfg.preservation_teacher == "initialization" else ""
-    )
+    if cfg.finetune_checkpoint:
+        finetune_state = torch.load(
+            Path(cfg.finetune_checkpoint).expanduser().resolve(),
+            map_location="cpu",
+            weights_only=False,
+        )
+        if finetune_state.get("kind") != "vpr_inference":
+            raise ValueError("Route fine-tuning must initialize from a VPR inference checkpoint")
+        declared_dimension = finetune_state.get("descriptor_dim")
+        if declared_dimension is not None and int(declared_dimension) != cfg.descriptor_dim:
+            raise ValueError("Route fine-tuning checkpoint descriptor dimension mismatch")
+        model.load_state_dict(finetune_state["model"], strict=True)
     classifier_device = torch.device("cpu") if cfg.classifier_cpu_offload else device
     classifier = MarginCosineClassifier(
         cfg.descriptor_dim, len(dataset.place_to_label)
@@ -272,12 +312,13 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
     optimizer = build_vpr_optimizer(model, classifier, cfg)
 
     loader_kwargs = {
-        "batch_size": cfg.batch_size,
-        "sampler": sampler,
         "num_workers": cfg.workers,
         "pin_memory": device.type == "cuda",
-        "drop_last": True,
     }
+    if cfg.sampler == "pk_balanced":
+        loader_kwargs["batch_sampler"] = sampler
+    else:
+        loader_kwargs.update(batch_size=cfg.batch_size, sampler=sampler, drop_last=True)
     if cfg.workers > 0:
         loader_kwargs.update(
             multiprocessing_context="spawn",
@@ -288,16 +329,23 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
     scheduler = build_vpr_scheduler(optimizer, cfg, steps_per_epoch)
     use_amp = bool(cfg.amp and device.type == "cuda")
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    relation_queue = (
+        DatasetNeighborhoodQueue(cfg.datasets, cfg.relation_queue_size, device)
+        if cfg.cross_domain_aux == "cross_domain_relation"
+        else None
+    )
+    route_mining_cache = (
+        RouteMiningCache(config, generated_manifest)
+        if cfg.route_contrastive_weight > 0 else None
+    )
     start_epoch, best_score, epoch_zero_score = 0, -1.0, -1.0
     stale_epochs, saved_optimizer_step, samples_seen = 0, 0, 0
     regression_aborted = False
 
     if cfg.resume:
         state = torch.load(cfg.resume, map_location="cpu", weights_only=False)
-        if state["config_fingerprint"] != config.fingerprint():
+        if not checkpoint_config_matches(state, config, ("data", "vpr", "evaluation")):
             raise ValueError("VPR resume config does not match the current config")
-        if state.get("preservation_teacher_fingerprint", "") != preservation_teacher_fingerprint:
-            raise ValueError("VPR resume preservation teacher does not match")
         model.load_state_dict(state["model"])
         classifier.load_state_dict(state["classifier"])
         optimizer.load_state_dict(state["optimizer"])
@@ -314,6 +362,19 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         cache_fingerprint = teacher_cache.fingerprint if teacher_cache is not None else ""
         if state.get("teacher_cache_fingerprint", "") != cache_fingerprint:
             raise ValueError("VPR resume teacher cache does not match the current cache")
+        if state.get("sampler_state") is not None:
+            if not hasattr(sampler, "load_state_dict"):
+                raise ValueError("Checkpoint contains sampler state for a non-resumable sampler")
+            sampler.load_state_dict(state["sampler_state"])
+        if relation_queue is not None:
+            if state.get("relation_queue_state") is None:
+                raise ValueError("CDND resume checkpoint is missing relation queue state")
+            relation_queue.load_state_dict(state["relation_queue_state"])
+        expected_route_fingerprint = (
+            route_mining_cache.fingerprint if route_mining_cache is not None else ""
+        )
+        if state.get("route_mining_fingerprint", "") != expected_route_fingerprint:
+            raise ValueError("VPR resume route mining cache does not match")
 
     epochs = int(smoke_epochs or cfg.epochs)
     best_path = output_dir / "model_best.pt"
@@ -330,44 +391,25 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         model.eval()
         metrics = _evaluate_validation(
             model, config, transform, device,
-            output_dir / "validation" / "epoch_000.json",
+            output_dir / "validation" / "latest.json",
         )
         epoch_zero_score = float(metrics["recalls"]["1"])
         best_score = epoch_zero_score
         atomic_torch_save(
             _inference_checkpoint(
-                config, 0, best_score, epoch_zero_score, model,
-                generated_manifest, preservation_teacher_fingerprint,
+                config, 0, best_score, epoch_zero_score, model, generated_manifest,
             ),
             best_path,
-        )
-        tracker.log(
-            {
-                "validation/epoch_zero/recall_at_1": epoch_zero_score,
-                "validation/epoch_zero/recall_at_5": float(metrics["recalls"].get("5", 0.0)),
-                "validation/epoch_zero/recall_at_10": float(metrics["recalls"].get("10", 0.0)),
-                "validation/epoch_zero/mrr": float(metrics["mrr"]),
-                "validation/epoch_zero/valid_queries": int(metrics["valid_queries"]),
-                "validation/best_recall_at_1": best_score,
-            },
-            step=0,
-        )
-        tracker.log_checkpoint(
-            best_path,
-            name=f"vpr-{cfg.model_family}-{cfg.aggregator}-seed{cfg.seed}",
-            aliases=["best", "epoch-0"],
         )
 
     completed_epochs = start_epoch
     for epoch in range(start_epoch, epochs):
-        if isinstance(sampler, (CoverageBalancedSampler, RollingBalancedSampler)):
+        if isinstance(sampler, (CoverageBalancedSampler, RollingBalancedSampler, PKBalancedBatchSampler)):
             sampler.set_epoch(epoch)
         model.train()
         warmup = configure_training_phase(model, optimizer, cfg, epoch)
         if cfg.freeze_batch_norm:
             freeze_batch_norm_statistics(model)
-        if teacher is not None:
-            teacher.eval()
 
         running = 0.0
         epoch_samples = 0
@@ -380,7 +422,6 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         data_wait_start = epoch_start
         optimizer.zero_grad(set_to_none=True)
         progress = tqdm(loader, desc=f"vpr/{cfg.model_family}/{cfg.aggregator} epoch {epoch + 1}")
-        logged_first_update = False
         for batch_index, batch in enumerate(progress):
             batch_ready = time.perf_counter()
             data_time += batch_ready - data_wait_start
@@ -388,55 +429,90 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             day = batch["day"].to(device, non_blocking=True)
             fake = batch["fake"].to(device, non_blocking=True)
             labels = batch["label"].to(device, non_blocking=True)
+            image_keys = batch["image_key"].to(device, non_blocking=True)
+            batch_datasets = set(batch["dataset"])
+            dataset_name = next(iter(batch_datasets))
+            if cfg.cross_domain_aux == "cross_domain_relation" and len(batch_datasets) != 1:
+                raise RuntimeError("CDND requires every mini-batch to contain one dataset")
             with torch.autocast(device.type, enabled=use_amp):
-                explicit_domains = cfg.train_domains != "legacy"
-                need_fake = not explicit_domains or cfg.train_domains in {"fake", "day_fake"}
-                need_day = (
-                    (not explicit_domains and cfg.loss_profile in {"v2", "v3"})
-                    or (explicit_domains and cfg.train_domains in {"day", "day_fake"})
-                    or cfg.cross_domain_aux in {"pair", "preserve_day"}
-                )
-                fake_descriptor = model.encode(fake) if need_fake else None
-                day_descriptor = model.encode(day) if need_day else None
+                fake_descriptor = model.encode(fake)
+                day_descriptor = model.encode(day)
                 if "teacher_descriptor" in batch:
                     teacher_day = batch["teacher_descriptor"].to(device, non_blocking=True)
-                elif teacher is not None:
-                    with torch.no_grad():
-                        teacher_day = teacher.encode(day)
                 else:
                     teacher_day = None
-                if explicit_domains:
-                    loss, components = configurable_vpr_loss(
-                        cfg.train_domains,
-                        cfg.cross_domain_aux,
+                loss, components = day_fake_classification_loss(
+                    day_descriptor, fake_descriptor, labels, classifier
+                )
+                if cfg.cross_domain_aux == "cross_domain_relation":
+                    if teacher_day is None or day_descriptor is None or fake_descriptor is None:
+                        raise RuntimeError("CDND requires teacher, day, and fake descriptors")
+                    candidates = relation_queue.candidates(
+                        dataset_name,
+                        teacher_day,
                         day_descriptor,
-                        fake_descriptor,
                         labels,
-                        classifier,
-                        teacher_day=teacher_day,
-                        pair_weight=cfg.pair_weight,
-                        pair_target=cfg.pair_target,
-                        relation_weight=cfg.relation_weight,
-                        preservation_weight=cfg.preservation_weight,
-                        preservation_target=cfg.preservation_target,
+                        image_keys,
                     )
-                else:
-                    legacy_day = day_descriptor if day_descriptor is not None else fake_descriptor.detach()
-                    loss, components = vpr_training_loss(
-                        cfg.loss_profile,
-                        legacy_day,
-                        fake_descriptor,
-                        labels,
-                        classifier,
-                        teacher_day=teacher_day,
-                        pair_weight=cfg.pair_weight,
-                        pair_target=cfg.pair_target,
-                        relation_weight=cfg.relation_weight,
+                    with torch.autocast(device.type, enabled=False):
+                        fake_relation, day_relation, relation_stats = (
+                            cross_domain_neighborhood_loss(
+                                teacher_day,
+                                candidates.teacher,
+                                fake_descriptor,
+                                day_descriptor,
+                                candidates.student_day,
+                                labels,
+                                candidates.labels,
+                                image_keys,
+                                candidates.image_keys,
+                                relation_temperature=cfg.relation_temperature,
+                            )
+                        )
+                    relation = fake_relation + cfg.relation_day_weight * day_relation
+                    loss = loss + cfg.relation_weight * relation
+                    components.update(
+                        relation_fake_to_day=fake_relation,
+                        relation_day_to_day=day_relation,
+                        relation=relation,
+                        relation_valid_anchors=relation_stats["valid_anchors"],
+                    )
+                if cfg.route_contrastive_weight > 0:
+                    if dataset_name == "robotcar":
+                        mined_descriptors, mined_positive, mined_negative = (
+                            route_mining_cache.candidates(
+                                batch["manifest_index"], device
+                            )
+                        )
+                        route_loss, route_stats = mined_route_contrastive_loss(
+                            fake_descriptor,
+                            mined_descriptors,
+                            mined_positive,
+                            mined_negative,
+                            temperature=cfg.route_contrastive_temperature,
+                        )
+                    else:
+                        route_loss = (fake_descriptor.sum() + day_descriptor.sum()) * 0.0
+                        route_stats = {
+                            "valid_anchors": torch.zeros((), device=device, dtype=torch.long),
+                            "positive_pairs": torch.zeros((), device=device, dtype=torch.long),
+                            "negative_pairs": torch.zeros((), device=device, dtype=torch.long),
+                        }
+                    loss = loss + cfg.route_contrastive_weight * route_loss
+                    components.update(
+                        route_contrastive=route_loss,
+                        route_valid_anchors=route_stats["valid_anchors"],
+                        route_positive_pairs=route_stats["positive_pairs"],
+                        route_negative_pairs=route_stats["negative_pairs"],
                     )
             loss_divisor = accumulation_divisor(
                 batch_index, len(loader), cfg.gradient_accumulation_steps
             )
             scaler.scale(loss / loss_divisor).backward()
+            if relation_queue is not None:
+                relation_queue.enqueue(
+                    dataset_name, teacher_day, day_descriptor, labels, image_keys
+                )
             update_due = (
                 (batch_index + 1) % cfg.gradient_accumulation_steps == 0
                 or batch_index + 1 == len(loader)
@@ -457,11 +533,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             batch_samples = int(day.shape[0])
             epoch_samples += batch_samples
             samples_seen += batch_samples
-            student_views = int(need_day) + int(need_fake)
-            encoded_student_images += batch_samples * student_views
-            teacher_images += batch_samples * int(
-                teacher is not None and "teacher_descriptor" not in batch
-            )
+            encoded_student_images += batch_samples * 2
             running += float(loss.item())
             step_time += time.perf_counter() - step_start
             elapsed = max(time.perf_counter() - epoch_start, 1e-9)
@@ -469,47 +541,12 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
                 loss=f"{loss.item():.3f}",
                 samples=f"{epoch_samples}/{cfg.samples_per_epoch}",
             )
-            if optimizer_stepped and (
-                not logged_first_update or global_step % config.tracking.log_every_steps == 0
-            ):
-                log_values = {
-                    "train/total": float(loss.item()),
-                    "train/lr_encoder": float(optimizer.param_groups[0]["lr"]),
-                    "train/lr_aggregator": float(optimizer.param_groups[1]["lr"]),
-                    "train/lr_classifier": float(optimizer.param_groups[2]["lr"]),
-                    "train/epoch": epoch + (batch_index + 1) / max(1, len(loader)),
-                    "train/samples_epoch": epoch_samples,
-                    "train/samples_total": samples_seen,
-                    "train/batches_epoch": len(loader),
-                    "train/optimizer_steps_epoch": epoch_optimizer_steps,
-                    "train/source_samples": epoch_samples,
-                    "train/encoded_student_images": encoded_student_images,
-                    "train/teacher_images": teacher_images,
-                    "train/optimizer_steps": epoch_optimizer_steps,
-                    "train/domain_views_per_source": student_views,
-                    "train/samples_per_second": epoch_samples / elapsed,
-                    "train/images_per_second": encoded_student_images / elapsed,
-                    "train/data_time_ms": data_time * 1000 / max(1, batch_index + 1),
-                    "train/step_time_ms": step_time * 1000 / max(1, batch_index + 1),
-                    "train/bn_frozen": int(cfg.freeze_batch_norm),
-                    "train/warmup_active": int(warmup),
-                }
-                log_values.update(
-                    {f"train/{name}": float(value.item()) for name, value in components.items()}
-                )
-                tracker.log(log_values, step=global_step)
-            if optimizer_stepped and (
-                not logged_first_update or global_step % config.tracking.image_every_steps == 0
-            ):
-                tracker.log_vpr_images(day, fake, step=global_step)
-            if optimizer_stepped:
-                logged_first_update = True
             data_wait_start = time.perf_counter()
 
         model.eval()
         metrics = _evaluate_validation(
             model, config, transform, device,
-            output_dir / "validation" / f"epoch_{epoch + 1:03d}.json",
+            output_dir / "validation" / "latest.json",
         )
         score = float(metrics["recalls"]["1"])
         previous_lrs = [float(group["lr"]) for group in optimizer.param_groups]
@@ -525,42 +562,6 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         stale_epochs = 0 if significant_improvement else stale_epochs + 1
         at_min_lr = learning_rates_at_minimum(optimizer, cfg)
         epoch_elapsed = max(time.perf_counter() - epoch_start, 1e-9)
-        epoch_log = {
-            "validation/robotcar_project/recall_at_1": score,
-            "validation/robotcar_project/recall_at_5": float(metrics["recalls"].get("5", 0.0)),
-            "validation/robotcar_project/recall_at_10": float(metrics["recalls"].get("10", 0.0)),
-            "validation/robotcar_project/mrr": float(metrics["mrr"]),
-            "validation/robotcar_project/valid_queries": int(metrics["valid_queries"]),
-            "validation/best_recall_at_1": best_score,
-            "train/epoch_loss_mean": running / max(1, len(loader)),
-            "train/lr_encoder": current_lrs[0],
-            "train/lr_aggregator": current_lrs[1],
-            "train/lr_classifier": current_lrs[2],
-            "train/lr_reduced": int(lr_reduced),
-            "train/stale_epochs": stale_epochs,
-            "train/lr_at_minimum": int(at_min_lr),
-            "train/samples_epoch": epoch_samples,
-            "train/samples_total": samples_seen,
-            "train/batches_epoch": len(loader),
-            "train/optimizer_steps_epoch": epoch_optimizer_steps,
-            "train/source_samples": epoch_samples,
-            "train/encoded_student_images": encoded_student_images,
-            "train/teacher_images": teacher_images,
-            "train/optimizer_steps": epoch_optimizer_steps,
-            "train/domain_views_per_source": encoded_student_images / max(1, epoch_samples),
-            "train/samples_per_second": epoch_samples / epoch_elapsed,
-            "train/images_per_second": encoded_student_images / epoch_elapsed,
-            "train/data_time_ms": data_time * 1000 / max(1, len(loader)),
-            "train/step_time_ms": step_time * 1000 / max(1, len(loader)),
-            "train/bn_frozen": int(cfg.freeze_batch_norm),
-            "train/warmup_active": int(warmup),
-            "epoch": epoch + 1,
-        }
-        if isinstance(sampler, (CoverageBalancedSampler, RollingBalancedSampler)):
-            for dataset_name, values in sampler.statistics().items():
-                for name, value in values.items():
-                    epoch_log[f"coverage/{dataset_name}/{name}"] = value
-        tracker.log(epoch_log, step=global_step)
 
         state = _vpr_checkpoint(
             config,
@@ -575,23 +576,19 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             scaler,
             generated_manifest,
             teacher_cache.fingerprint if teacher_cache is not None else "",
-            preservation_teacher_fingerprint,
             global_step,
             samples_seen,
+            sampler.state_dict() if hasattr(sampler, "state_dict") else None,
+            relation_queue.state_dict() if relation_queue is not None else None,
+            route_mining_cache.fingerprint if route_mining_cache is not None else "",
         )
         atomic_torch_save(state, output_dir / "checkpoints" / "latest.pt")
         if improved:
             atomic_torch_save(
                 _inference_checkpoint(
-                    config, epoch + 1, score, epoch_zero_score, model,
-                    generated_manifest, preservation_teacher_fingerprint,
+                    config, epoch + 1, score, epoch_zero_score, model, generated_manifest,
                 ),
                 best_path,
-            )
-            tracker.log_checkpoint(
-                best_path,
-                name=f"vpr-{cfg.model_family}-{cfg.aggregator}-seed{cfg.seed}",
-                aliases=["best", f"epoch-{epoch + 1}"],
             )
 
         completed_epochs = epoch + 1
@@ -611,7 +608,6 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         and stale_epochs >= cfg.patience
         and learning_rates_at_minimum(optimizer, cfg)
     )
-    classifier_parameters = sum(parameter.numel() for parameter in classifier.parameters())
     if regression_aborted:
         convergence_status = "epoch_one_regression_aborted"
     elif completed_epochs >= epochs:
@@ -620,43 +616,4 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         convergence_status = "early_stopped_converged"
     else:
         convergence_status = "incomplete"
-    tracker.summary(
-        {
-            "epoch_zero_recall_at_1": epoch_zero_score,
-            "best_val_recall_at_1": best_score,
-            "completed_epochs": completed_epochs,
-            "early_stopped": early_stopped,
-            "regression_aborted": regression_aborted,
-            "convergence_status": convergence_status,
-            "best_checkpoint": str(best_path.resolve()),
-            "training_rows": len(dataset),
-            "samples_per_epoch": cfg.samples_per_epoch,
-            "planned_total_samples": cfg.samples_per_epoch * epochs,
-            "samples_seen": samples_seen,
-            "place_classes": len(dataset.place_to_label),
-            "model_parameters": sum(parameter.numel() for parameter in model.parameters()),
-            "classifier_parameters": classifier_parameters,
-            "classifier_parameter_mib_fp32": classifier_parameters * 4 / 1024**2,
-            "classifier_adam_state_mib_fp32": classifier_parameters * 8 / 1024**2,
-            "classifier_cpu_offload": cfg.classifier_cpu_offload,
-            "classifier_optimizer_state_device": str(classifier_device),
-            "peak_training_cuda_mib": (
-                torch.cuda.max_memory_allocated(device) / 1024**2
-                if device.type == "cuda" else None
-            ),
-            "process_peak_rss_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0,
-            "sampler": cfg.sampler,
-            "coverage_statistics": (
-                sampler.statistics()
-                if isinstance(sampler, (CoverageBalancedSampler, RollingBalancedSampler)) else {}
-            ),
-            "effective_batch_size": cfg.batch_size * cfg.gradient_accumulation_steps,
-            "scheduler": cfg.scheduler,
-            "freeze_batch_norm": cfg.freeze_batch_norm,
-            "classifier_warmup_epochs": cfg.classifier_warmup_epochs,
-            "preservation_teacher": cfg.preservation_teacher,
-            "preservation_teacher_fingerprint": preservation_teacher_fingerprint,
-        }
-    )
-    tracker.finish(exit_code=1 if regression_aborted else 0)
     return best_path

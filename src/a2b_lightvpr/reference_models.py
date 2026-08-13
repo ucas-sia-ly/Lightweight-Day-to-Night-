@@ -26,7 +26,6 @@ from .checkpointing import file_sha256, write_json
 from .config import ExperimentConfig
 from .data import benchmark_rows, read_robotcar_manifest
 from .evaluation import extract_descriptors, positive_indices, retrieval_metrics
-from .tracking import TrainingTracker
 from .transforms import IMAGENET_MEAN, IMAGENET_STD, VPRTransform
 from .vpr.model import build_descriptor_model, eigenplaces_checkpoint
 from .vpr.teachers import build_relation_teacher
@@ -459,16 +458,6 @@ def benchmark_reference_models(
     }
     output = Path(output)
     write_json(payload, output)
-    tracker = TrainingTracker(
-        config, job_type="benchmark-reference-models",
-        default_name="reference-resource-benchmark", output_dir=output.parent,
-    )
-    summary = {}
-    for name, metrics in results.items():
-        for key in ("parameters", "descriptor_dim", "checkpoint_bytes", "batch1_p50_ms", "batch1_p95_ms", "peak_cuda_mib"):
-            summary[f"resources/{name}/{key}"] = metrics[key]
-    tracker.summary(summary)
-    tracker.finish()
     return output
 
 
@@ -578,101 +567,3 @@ def evaluate_dual_encoder(
     else:
         positives = positive_indices(database, queries, radius, yaw)
     return retrieval_metrics(database_descriptors, query_descriptors, positives, recalls)
-
-
-def evaluate_vpr_suite(
-    config: ExperimentConfig, registry_path: str | Path, *, model_name: str,
-    dataset: str, transform_name: str = "native", protocol: str = "paper",
-    split: str = "test", output: str | Path | None = None,
-) -> Path:
-    registry = _registry(registry_path)
-    if model_name not in registry:
-        raise ValueError(f"Unknown reference model: {model_name}")
-    audit = audit_reference_models(registry_path)
-    if not audit["models"][model_name]["ready"]:
-        raise FileNotFoundError(json.dumps(audit["models"][model_name], indent=2))
-    spec = registry[model_name]
-    query_model = build_reference_model(spec)
-    use_original_database = (
-        config.vpr.database_encoder == "original" and bool(spec.get("database_checkpoint"))
-    )
-    database_model = (
-        build_reference_model({**spec, "checkpoint": spec["database_checkpoint"]})
-        if use_original_database else query_model
-    )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    query_model.eval().to(device)
-    database_model.eval().to(device)
-    database, queries = suite_rows(config, dataset, split)
-    if transform_name == "native":
-        height, width = spec["native_size"]
-        transform = FixedResizeTransform(height, width)
-    else:
-        height, width = 320, 480
-        transform = VPRTransform(height, width)
-    radius = 10.0 if protocol == "project" else 25.0
-    yaw = 30.0 if protocol == "project" and dataset == "robotcar" else None
-    batch_size = (
-        1 if spec.get("batch_dependent") else
-        int(spec.get("native_batch_size", 1)) if transform_name == "native" else 16
-    )
-    metrics = evaluate_dual_encoder(
-        database_model, query_model, database, queries, transform, radius, yaw,
-        config.evaluation.recalls, device, batch_size,
-        config.vpr.workers,
-    )
-    sample = torch.randn(1, 3, height, width, device=device)
-    timing = []
-    if device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats(device)
-    with torch.inference_mode():
-        for _ in range(10):
-            with torch.autocast(device.type, enabled=device.type == "cuda"):
-                query_model.encode(sample)
-        for _ in range(int(spec.get("benchmark_iterations", 100))):
-            if device.type == "cuda":
-                torch.cuda.synchronize(device)
-            start = time.perf_counter()
-            with torch.autocast(device.type, enabled=device.type == "cuda"):
-                query_model.encode(sample)
-            if device.type == "cuda":
-                torch.cuda.synchronize(device)
-            timing.append((time.perf_counter() - start) * 1000.0)
-    metrics.update({
-        "model": model_name, "dataset": dataset, "split": split,
-        "database_encoder": "original" if use_original_database else "adapted",
-        "protocol": protocol, "positive_radius_m": radius, "positive_yaw_deg": yaw,
-        "transform": transform_name, "input_size": [height, width],
-        "descriptor_dim": query_model.descriptor_dim,
-        "parameters": sum(parameter.numel() for parameter in query_model.parameters()),
-        "batch1_p50_ms": float(np.percentile(timing, 50)),
-        "batch1_p95_ms": float(np.percentile(timing, 95)),
-        "benchmark_precision": "fp16" if device.type == "cuda" else "fp32",
-        "peak_cuda_mib": (
-            float(torch.cuda.max_memory_allocated(device) / 1024**2)
-            if device.type == "cuda" else None
-        ),
-        "process_peak_rss_mib": float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0),
-        "query_checkpoint_sha256": (
-            file_sha256(spec.get("_resolved_checkpoint", spec.get("checkpoint")))
-            if spec.get("_resolved_checkpoint") or spec.get("checkpoint") else ""
-        ),
-        "database_checkpoint_sha256": (
-            file_sha256(spec["database_checkpoint"]) if spec.get("database_checkpoint") else ""
-        ),
-    })
-    output = Path(output or Path("runs/reference") / model_name / dataset / protocol / transform_name / "metrics.json")
-    write_json(metrics, output)
-    tracker = TrainingTracker(config, job_type="evaluate-reference-vpr",
-        default_name=f"{model_name}-{dataset}-{protocol}-{transform_name}",
-        output_dir=output.parent,
-        run_key=f"{model_name}:{dataset}:{protocol}:{transform_name}:{metrics['database_encoder']}")
-    tracker.summary({
-        "reference/model": model_name, "reference/dataset": dataset,
-        "reference/recall_at_1": metrics["recalls"]["1"],
-        "reference/recall_at_5": metrics["recalls"].get("5"),
-        "reference/recall_at_10": metrics["recalls"].get("10"),
-        "reference/mrr": metrics["mrr"],
-    })
-    tracker.finish()
-    return output

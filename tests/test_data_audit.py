@@ -130,7 +130,7 @@ def test_rolling_sampler_is_balanced_unique_and_resume_deterministic():
     for dataset, count in (("a", 4), ("b", 2)):
         for index in range(count):
             rows.append({"dataset": dataset, "global_place_id": f"{dataset}:p{index // 2}"})
-    sampler = RollingBalancedSampler(rows, {"a": 3, "b": 2}, seed=7)
+    sampler = RollingBalancedSampler(rows, {"a": 3, "b": 2})
     first = list(sampler)
     assert len(first) == 5
     assert len(first) == len(set(first))
@@ -139,7 +139,7 @@ def test_rolling_sampler_is_balanced_unique_and_resume_deterministic():
     second = list(sampler)
     assert first != second
     assert len(second) == len(set(second))
-    resumed = RollingBalancedSampler(rows, {"a": 3, "b": 2}, seed=7)
+    resumed = RollingBalancedSampler(rows, {"a": 3, "b": 2})
     resumed.set_epoch(1)
     assert second == list(resumed)
     stats = sampler.statistics()
@@ -152,7 +152,7 @@ def test_rolling_sampler_repeats_only_after_small_dataset_is_covered():
         {"dataset": "small", "global_place_id": f"small:p{index}"}
         for index in range(3)
     ]
-    sampler = RollingBalancedSampler(rows, {"small": 7}, seed=3)
+    sampler = RollingBalancedSampler(rows, {"small": 7})
     window = sampler._window("small", 0)
     values = list(sampler)
     assert len(values) == 7
@@ -166,13 +166,13 @@ def test_rolling_sampler_windows_stay_unique_across_many_cycle_boundaries():
         {"dataset": "svox", "global_place_id": f"svox:p{index // 2}"}
         for index in range(34)
     ]
-    sampler = RollingBalancedSampler(rows, {"svox": 20}, seed=11)
+    sampler = RollingBalancedSampler(rows, {"svox": 20})
     for epoch in range(20):
         sampler.set_epoch(epoch)
         indices = list(sampler)
         assert len(indices) == 20
         assert len(set(indices)) == 20
 
-        resumed = RollingBalancedSampler(rows, {"svox": 20}, seed=11)
+        resumed = RollingBalancedSampler(rows, {"svox": 20})
         resumed.set_epoch(epoch)
         assert indices == list(resumed)

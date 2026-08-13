@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import importlib.util
 import resource
 import statistics
 import time
@@ -12,19 +11,7 @@ import torch
 
 from .checkpointing import write_json
 from .config import ExperimentConfig
-from .tracking import TrainingTracker
 from .vpr.model import build_descriptor_model
-
-
-def _require_onnx_dependencies() -> None:
-    required = ("onnx", "onnxscript", "onnxruntime")
-    missing = [name for name in required if importlib.util.find_spec(name) is None]
-    if missing:
-        packages = ", ".join(missing)
-        raise ModuleNotFoundError(
-            f"ONNX export dependencies are missing: {packages}. "
-            "Install them with: pip install -e '.[export]'"
-        )
 
 
 def load_vpr_model(config: ExperimentConfig, checkpoint: str | Path | None = None):
@@ -33,6 +20,12 @@ def load_vpr_model(config: ExperimentConfig, checkpoint: str | Path | None = Non
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
     if state.get("kind") != "vpr_inference":
         raise ValueError("Expected an inference-only VPR checkpoint")
+    checkpoint_dim = state.get("descriptor_dim")
+    if checkpoint_dim is not None and int(checkpoint_dim) != cfg.descriptor_dim:
+        raise ValueError(
+            f"Checkpoint descriptor dimension {checkpoint_dim} does not match "
+            f"configuration dimension {cfg.descriptor_dim}"
+        )
     model = build_descriptor_model(
         cfg.aggregator,
         image_height=cfg.image_height,
@@ -55,7 +48,6 @@ def benchmark_model(
     *,
     warmup: int = 100,
     iterations: int = 1_000,
-    track: bool = True,
 ) -> dict:
     model, state, checkpoint_path = load_vpr_model(config, checkpoint)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -111,36 +103,4 @@ def benchmark_model(
     )
     output = Path(config.vpr.output_dir) / "benchmark.json"
     write_json(result, output)
-    if track:
-        tracker = TrainingTracker(
-            config,
-            job_type="benchmark-vpr",
-            default_name=(
-                f"benchmark-{config.vpr.model_family}-{config.vpr.aggregator}-"
-                f"{config.vpr.image_height}x{config.vpr.image_width}"
-            ),
-            output_dir=config.vpr.output_dir,
-        )
-        tracker.summary({f"benchmark/{key}": value for key, value in result.items()})
-        tracker.finish()
     return result
-
-
-def export_onnx(config: ExperimentConfig, checkpoint: str | Path | None = None) -> Path:
-    _require_onnx_dependencies()
-    model, _, _ = load_vpr_model(config, checkpoint)
-    model.eval()
-    sample = torch.randn(1, 3, config.vpr.image_height, config.vpr.image_width)
-    output = Path(config.vpr.output_dir) / "model.onnx"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    torch.onnx.export(
-        model,
-        sample,
-        output,
-        input_names=["images"],
-        output_names=["descriptors"],
-        dynamic_axes={"images": {0: "batch"}, "descriptors": {0: "batch"}},
-        opset_version=17,
-        do_constant_folding=True,
-    )
-    return output

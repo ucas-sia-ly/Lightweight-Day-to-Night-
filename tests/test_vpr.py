@@ -1,17 +1,20 @@
 import pytest
 import torch
 import importlib.util
+import hashlib
 from pathlib import Path
 
 from a2b_lightvpr.vpr.losses import (
     MarginCosineClassifier,
-    configurable_vpr_loss,
-    pair_hinge,
-    relation_distillation,
-    preservation_hinge,
-    vpr_training_loss,
+    day_fake_classification_loss,
 )
-from a2b_lightvpr.vpr.model import NetVLADPool, MixVPR, build_descriptor_model, eigenplaces_checkpoint
+from a2b_lightvpr.vpr.model import (
+    NetVLADPool,
+    MixVPR,
+    OfficialMixVPRModel,
+    build_descriptor_model,
+    eigenplaces_checkpoint,
+)
 
 
 @pytest.mark.parametrize("aggregator", ["gem", "convap", "mixvpr"])
@@ -25,34 +28,16 @@ def test_resnet50_aggregators_honor_512_contract(aggregator):
     assert torch.allclose(descriptor.norm(dim=1), torch.ones(1), atol=1e-5)
 
 
-def test_pair_hinge_stops_after_target():
-    descriptor = torch.randn(4, 512)
-    assert pair_hinge(descriptor, descriptor, 0.85).item() == pytest.approx(0.0)
-
-
-def test_relation_distillation_ignores_diagonal():
-    descriptor = torch.randn(4, 512)
-    assert relation_distillation(descriptor, descriptor).item() == pytest.approx(0.0)
-
-
-def test_preservation_hinge_anchors_only_below_target():
-    teacher = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
-    student = torch.tensor([[1.0, 0.0], [0.0, 1.0]], requires_grad=True)
-    loss = preservation_hinge(teacher, student, 0.95)
-    assert loss.item() == pytest.approx(0.475)
-    loss.backward()
-    assert student.grad is not None
-
-
-def test_mixvpr_512_matches_official_implementation():
+@pytest.mark.parametrize("descriptor_dim,channels,rows", [(128, 64, 2), (512, 256, 2)])
+def test_mixvpr_matches_official_implementation(descriptor_dim, channels, rows):
     path = Path("/home/admin123/diffusion_vpr_test/reference_code/MixVPR/models/aggregators/mixvpr.py")
     spec = importlib.util.spec_from_file_location("official_mixvpr", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    local = MixVPR(32, (4, 6), 512).eval()
+    local = MixVPR(32, (4, 6), descriptor_dim).eval()
     official = module.MixVPR(
-        in_channels=32, in_h=4, in_w=6, out_channels=256,
-        mix_depth=4, mlp_ratio=1, out_rows=2,
+        in_channels=32, in_h=4, in_w=6, out_channels=channels,
+        mix_depth=4, mlp_ratio=1, out_rows=rows,
     ).eval()
     official.load_state_dict(local.state_dict(), strict=True)
     value = torch.randn(2, 32, 4, 6)
@@ -60,12 +45,33 @@ def test_mixvpr_512_matches_official_implementation():
         torch.nn.functional.normalize(local(value), dim=1), official(value), atol=1e-6
     )
 
-@pytest.mark.parametrize("descriptor_dim", [512, 4096])
+@pytest.mark.parametrize("descriptor_dim", [128, 512, 4096])
 def test_mixvpr_descriptor_dimensions(descriptor_dim):
     model = MixVPR(32, (4, 6), descriptor_dim).eval()
     with torch.no_grad():
         value = model(torch.randn(2, 32, 4, 6))
     assert value.shape == (2, descriptor_dim)
+
+
+@pytest.mark.parametrize(
+    "descriptor_dim,filename,expected_sha256",
+    [
+        (128, "resnet50_MixVPR_128_channels(64)_rows(2).ckpt", "d9dc62449ebfbfca0ac138e3062469458f957c5dd8d61157fe07007d1da54b6f"),
+        (512, "resnet50_MixVPR_512_channels(256)_rows(2).ckpt", "7e1180f77d04ece604f2d12f8b6b9b323a99d6e43863c879028bfa17b34807cf"),
+        (4096, "resnet50_MixVPR_4096_channels(1024)_rows(4).ckpt", "97528606773e9920e93ca4d211daeabf1c7312480f38b45379ee5551a1b4dd24"),
+    ],
+)
+def test_mixvpr_initialization_checkpoints_load_strictly(
+    descriptor_dim, filename, expected_sha256
+):
+    checkpoint = Path(
+        "/home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/checkpoints/"
+        + filename
+    )
+    assert checkpoint.is_file()
+    assert hashlib.sha256(checkpoint.read_bytes()).hexdigest() == expected_sha256
+    state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    OfficialMixVPRModel(descriptor_dim).load_state_dict(state, strict=True)
 
 
 def test_netvlad_pool_output_contract():
@@ -162,43 +168,11 @@ def test_4096_classifier_amp_accumulation_resume_stays_on_gpu(tmp_path):
     assert optimizer_state["exp_avg_sq"].device.type == "cuda"
 
 
-@pytest.mark.parametrize("profile", ["v0", "v1", "v2", "v3"])
-def test_loss_profiles_are_finite(profile):
+def test_day_fake_classification_loss_is_finite():
     day = torch.nn.functional.normalize(torch.randn(4, 512), dim=1)
     fake = torch.nn.functional.normalize(torch.randn(4, 512), dim=1)
     labels = torch.tensor([0, 1, 2, 3])
     classifier = MarginCosineClassifier(512, 4)
-    loss, components = vpr_training_loss(
-        profile,
-        day,
-        fake,
-        labels,
-        classifier,
-        teacher_day=day if profile in {"v1", "v3"} else None,
-    )
+    loss, components = day_fake_classification_loss(day, fake, labels, classifier)
     assert torch.isfinite(loss)
-    assert "classification_fake" in components
-
-
-def test_safe_loss_has_no_day_fake_pair_component():
-    day = torch.nn.functional.normalize(torch.randn(4, 512), dim=1)
-    fake = torch.nn.functional.normalize(torch.randn(4, 512), dim=1)
-    teacher = day.detach().clone()
-    labels = torch.arange(4)
-    classifier = MarginCosineClassifier(512, 4)
-    loss, components = configurable_vpr_loss(
-        "day_fake",
-        "preserve_day",
-        day,
-        fake,
-        labels,
-        classifier,
-        teacher_day=teacher,
-        preservation_target=0.95,
-        preservation_weight=1.0,
-    )
-    assert torch.isfinite(loss)
-    assert set(components) == {
-        "classification_day", "classification_fake", "preservation_day"
-    }
-    assert "pair" not in components
+    assert set(components) == {"classification_day", "classification_fake"}

@@ -60,9 +60,9 @@ class FeatureMixer(nn.Module):
 class MixVPR(nn.Module):
     def __init__(self, input_dim: int, grid: tuple[int, int], output_dim: int = 512):
         super().__init__()
-        dimensions = {512: (256, 2), 4096: (1024, 4)}
+        dimensions = {128: (64, 2), 512: (256, 2), 4096: (1024, 4)}
         if output_dim not in dimensions:
-            raise ValueError("Official MixVPR output must be 512 or 4096")
+            raise ValueError("Official MixVPR output must be 128, 512, or 4096")
         output_channels, output_rows = dimensions[output_dim]
         tokens = int(grid[0] * grid[1])
         self.grid = grid
@@ -108,6 +108,7 @@ class NetVLADPool(nn.Module):
         self.dim = int(dim)
         self.conv = nn.Conv2d(dim, num_clusters, 1, bias=False)
         self.centroids = nn.Parameter(torch.empty(num_clusters, dim))
+        nn.init.normal_(self.centroids, std=self.dim ** -0.5)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         value = F.normalize(inputs, p=2, dim=1)

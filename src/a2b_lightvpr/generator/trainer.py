@@ -12,6 +12,7 @@ from tqdm.auto import tqdm
 from ..checkpointing import (
     SCHEMA_VERSION,
     atomic_torch_save,
+    checkpoint_config_matches,
     data_fingerprints,
     restore_rng_state,
     rng_state,
@@ -19,7 +20,6 @@ from ..checkpointing import (
 )
 from ..config import ExperimentConfig
 from ..data import BalancedGeneratorDataset
-from ..tracking import TrainingTracker
 from .networks import (
     PatchDiscriminator,
     ResnetGenerator,
@@ -33,21 +33,12 @@ def _device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+def _set_fixed_random_state() -> None:
+    random.seed(0)
+    np.random.seed(0)
+    torch.manual_seed(0)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def _content_parameters(objective: ContentObjective):
-    adversary_ids = {id(parameter) for parameter in objective.adversary_parameters()}
-    return [
-        parameter
-        for parameter in objective.parameters()
-        if parameter.requires_grad and id(parameter) not in adversary_ids
-    ]
+        torch.cuda.manual_seed_all(0)
 
 
 def _objective_state(objective: ContentObjective) -> dict:
@@ -61,13 +52,6 @@ def _linear_decay(step: int, max_steps: int) -> float:
     return max(0.0, 1.0 - (step - halfway) / max(1, max_steps - halfway))
 
 
-def _paired_charbonnier_loss(fake: torch.Tensor, target: torch.Tensor, mask: torch.Tensor):
-    if not bool(mask.any()):
-        return fake.sum() * 0.0
-    fake, target = fake[mask], target[mask]
-    return torch.sqrt((fake - target).square() + 1e-6).mean()
-
-
 def _checkpoint_payload(
     config: ExperimentConfig,
     step: int,
@@ -76,7 +60,6 @@ def _checkpoint_payload(
     objective,
     optimizer_g,
     optimizer_d,
-    optimizer_adversary,
     scheduler_g,
     scheduler_d,
     scaler,
@@ -93,7 +76,6 @@ def _checkpoint_payload(
         "content_objective": _objective_state(objective),
         "optimizer_g": optimizer_g.state_dict(),
         "optimizer_d": optimizer_d.state_dict(),
-        "optimizer_adversary": optimizer_adversary.state_dict() if optimizer_adversary else None,
         "scheduler_g": scheduler_g.state_dict(),
         "scheduler_d": scheduler_d.state_dict(),
         "scaler": scaler.state_dict(),
@@ -103,33 +85,20 @@ def _checkpoint_payload(
 
 def train_generator(config: ExperimentConfig, *, smoke_steps: int | None = None) -> Path:
     cfg = config.generator
-    _set_seed(cfg.seed)
+    _set_fixed_random_state()
     device = _device()
     max_steps = int(smoke_steps or cfg.max_steps)
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(config.as_dict(), output_dir / "resolved_config.json")
-    tracker = TrainingTracker(
-        config,
-        job_type="train-generator",
-        default_name=f"generator-{cfg.objective}-seed{cfg.seed}",
-        output_dir=output_dir,
-    )
-
     generator = ResnetGenerator().to(device)
     discriminator = PatchDiscriminator().to(device)
     objective = build_content_objective(
         cfg.objective, num_patches=cfg.num_patches, feature_dim=cfg.feature_dim
     ).to(device)
-    generator_parameters = list(generator.parameters()) + _content_parameters(objective)
+    generator_parameters = list(generator.parameters()) + list(objective.parameters())
     optimizer_g = torch.optim.Adam(generator_parameters, cfg.lr, betas=(cfg.beta1, cfg.beta2))
     optimizer_d = torch.optim.Adam(discriminator.parameters(), cfg.lr, betas=(cfg.beta1, cfg.beta2))
-    adversary_parameters = list(objective.adversary_parameters())
-    optimizer_adversary = (
-        torch.optim.Adam(adversary_parameters, cfg.lr, betas=(cfg.beta1, cfg.beta2))
-        if adversary_parameters
-        else None
-    )
     scheduler_g = torch.optim.lr_scheduler.LambdaLR(
         optimizer_g, lambda step: _linear_decay(step, max_steps)
     )
@@ -142,24 +111,20 @@ def train_generator(config: ExperimentConfig, *, smoke_steps: int | None = None)
 
     if cfg.resume:
         state = torch.load(cfg.resume, map_location=device, weights_only=False)
-        if state["config_fingerprint"] != config.fingerprint():
+        if not checkpoint_config_matches(state, config, ("data", "generator")):
             raise ValueError("Generator resume config does not match the current config")
         generator.load_state_dict(state["generator"])
         discriminator.load_state_dict(state["discriminator"])
         objective.load_state_dict(state["content_objective"], strict=False)
         optimizer_g.load_state_dict(state["optimizer_g"])
         optimizer_d.load_state_dict(state["optimizer_d"])
-        if optimizer_adversary and state.get("optimizer_adversary"):
-            optimizer_adversary.load_state_dict(state["optimizer_adversary"])
         scheduler_g.load_state_dict(state["scheduler_g"])
         scheduler_d.load_state_dict(state["scheduler_d"])
         scaler.load_state_dict(state["scaler"])
         restore_rng_state(state["rng"])
         start_step = int(state["step"])
 
-    dataset = BalancedGeneratorDataset(
-        config.data, max_steps * cfg.batch_size, cfg.seed, cfg.paired_probability
-    )
+    dataset = BalancedGeneratorDataset(config.data, max_steps * cfg.batch_size)
     remaining = Subset(dataset, range(start_step * cfg.batch_size, len(dataset)))
     loader = DataLoader(
         remaining,
@@ -186,15 +151,6 @@ def train_generator(config: ExperimentConfig, *, smoke_steps: int | None = None)
                 identity, target_features = generator(target, return_features=True)
                 _, identity_features = generator.encode_features(identity)
 
-        adversary_loss = None
-        if optimizer_adversary is not None:
-            optimizer_adversary.zero_grad(set_to_none=True)
-            with torch.autocast(device.type, enabled=use_amp):
-                adversary_loss = objective.adversary_loss(source_features, fake_features)
-            if adversary_loss is not None:
-                scaler.scale(adversary_loss).backward(retain_graph=True)
-                scaler.step(optimizer_adversary)
-
         optimizer_d.zero_grad(set_to_none=True)
         with torch.autocast(device.type, enabled=use_amp):
             loss_d = lsgan_discriminator_loss(discriminator(target), discriminator(fake.detach()))
@@ -216,15 +172,7 @@ def train_generator(config: ExperimentConfig, *, smoke_steps: int | None = None)
                 0.5 * (loss_content_source + loss_content_identity)
                 if loss_content_identity is not None else loss_content_source
             )
-            paired_mask = batch["paired"].to(device)
-            paired_charbonnier = _paired_charbonnier_loss(
-                fake, target, paired_mask
-            )
-            loss_g = (
-                loss_gan
-                + cfg.content_weight * loss_content
-                + cfg.paired_charbonnier_weight * paired_charbonnier
-            )
+            loss_g = loss_gan + cfg.content_weight * loss_content
         scaler.scale(loss_g).backward()
         scaler.step(optimizer_g)
         scale_before_update = scaler.get_scale()
@@ -236,31 +184,9 @@ def train_generator(config: ExperimentConfig, *, smoke_steps: int | None = None)
 
         progress.update(1)
         progress.set_postfix(g=f"{loss_g.item():.3f}", d=f"{loss_d.item():.3f}")
-        if step == start_step + 1 or step % config.tracking.log_every_steps == 0:
-            log_values = {
-                "train/generator_total": float(loss_g.item()),
-                "train/gan": float(loss_gan.item()),
-                "train/content": float(loss_content.item()),
-                "train/content_source": float(loss_content_source.item()),
-                "train/paired_count": int(paired_mask.sum().item()),
-                "train/paired_fraction": float(paired_mask.float().mean().item()),
-                "train/discriminator": float(loss_d.item()),
-                "train/lr_generator": float(optimizer_g.param_groups[0]["lr"]),
-                "train/lr_discriminator": float(optimizer_d.param_groups[0]["lr"]),
-                "train/samples_seen": int(step * cfg.batch_size),
-            }
-            if adversary_loss is not None:
-                log_values["train/negative_generator"] = float(adversary_loss.item())
-            if loss_content_identity is not None:
-                log_values["train/content_identity"] = float(loss_content_identity.item())
-            if bool(paired_mask.any()):
-                log_values["train/paired_charbonnier"] = float(paired_charbonnier.item())
-            tracker.log(log_values, step=step)
-        if step == start_step + 1 or step % config.tracking.image_every_steps == 0:
-            tracker.log_generator_images(source, fake, target, step=step)
         due = step % cfg.checkpoint_every == 0 or step == max_steps
         if due:
-            state_path = output_dir / "checkpoints" / f"state_{step:07d}.pt"
+            state_path = output_dir / "checkpoints" / "latest.pt"
             atomic_torch_save(
                 _checkpoint_payload(
                     config,
@@ -270,7 +196,6 @@ def train_generator(config: ExperimentConfig, *, smoke_steps: int | None = None)
                     objective,
                     optimizer_g,
                     optimizer_d,
-                    optimizer_adversary,
                     scheduler_g,
                     scheduler_d,
                     scaler,
@@ -290,17 +215,4 @@ def train_generator(config: ExperimentConfig, *, smoke_steps: int | None = None)
                 final_path,
             )
     progress.close()
-    tracker.summary(
-        {
-            "final_step": max_steps,
-            "objective": cfg.objective,
-            "generator_checkpoint": str(final_path.resolve()),
-        }
-    )
-    tracker.log_checkpoint(
-        final_path,
-        name=f"generator-{cfg.objective}-seed{cfg.seed}",
-        aliases=["final", f"step-{max_steps}"],
-    )
-    tracker.finish()
     return final_path

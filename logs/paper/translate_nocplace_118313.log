@@ -1,7 +1,0 @@
-{
-  "complete": true,
-  "expected_full_rows": 118313,
-  "generator_sha256": "886773f81d832337290a315b5cbd04f6333f6e3dbcaee9d340c0f6648d327def",
-  "manifest": "/home/admin123/diffusion_vpr_test/A2B-LightVPR/data/generated/nocplace_negcut_official_5k/manifest.csv",
-  "rows": 118313
-}

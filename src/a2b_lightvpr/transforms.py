@@ -24,19 +24,6 @@ def resize_short_side(image: Image.Image, short_side: int) -> Image.Image:
     return TF.resize(image, size, interpolation=TF.InterpolationMode.BICUBIC, antialias=True)
 
 
-def nocplace_paper_crop(
-    image: Image.Image, short_side: int = 640, crop_size: int = 512
-) -> Image.Image:
-    """Deterministic counterpart of NocPlace's short-side resize and 512 crop."""
-    image = resize_short_side(image.convert("RGB"), short_side)
-    width, height = image.size
-    if min(width, height) < crop_size:
-        raise ValueError("Crop exceeds resized image")
-    top = (height - crop_size) // 2
-    left = (width - crop_size) // 2
-    return TF.crop(image, top, left, crop_size, crop_size)
-
-
 @dataclass(frozen=True)
 class GeneratorTrainTransform:
     load_short_side: int = 352

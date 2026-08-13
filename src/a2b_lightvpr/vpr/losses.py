@@ -25,135 +25,188 @@ class MarginCosineClassifier(nn.Module):
         return (logits * self.scale).to(output_device)
 
 
-def pair_hinge(day: torch.Tensor, fake: torch.Tensor, target: float = 0.85) -> torch.Tensor:
-    agreement = F.cosine_similarity(day, fake, dim=1)
-    return F.relu(float(target) - agreement).mean()
-
-
-def relation_distillation(teacher: torch.Tensor, student: torch.Tensor) -> torch.Tensor:
-    teacher = F.normalize(teacher.detach(), dim=1)
-    student = F.normalize(student, dim=1)
-    teacher_relation = teacher @ teacher.T
-    student_relation = student @ student.T
-    mask = ~torch.eye(teacher.shape[0], dtype=torch.bool, device=teacher.device)
-    if not mask.any():
-        return student.sum() * 0.0
-    return F.smooth_l1_loss(student_relation[mask], teacher_relation[mask])
-
-
-def preservation_hinge(
-    teacher: torch.Tensor, student: torch.Tensor, target: float = 0.95
-) -> torch.Tensor:
-    agreement = F.cosine_similarity(teacher.detach(), student, dim=1)
-    return F.relu(float(target) - agreement).mean()
-
-
 def ikt_loss(
     teacher_descriptors: torch.Tensor,
     fake_descriptors: torch.Tensor,
     classifier: MarginCosineClassifier,
     temperature: float = 4.0,
 ) -> torch.Tensor:
+    """NocPlace reference loss; it is not used by the CDND training path."""
     teacher_logits = classifier(teacher_descriptors.detach()) / temperature
     student_logits = classifier(fake_descriptors) / temperature
-    return (
-        F.kl_div(
-            F.log_softmax(student_logits, dim=1),
-            F.softmax(teacher_logits, dim=1),
-            reduction="batchmean",
-        )
-        * temperature**2
-    )
+    return F.kl_div(
+        F.log_softmax(student_logits, dim=1),
+        F.softmax(teacher_logits, dim=1),
+        reduction="batchmean",
+    ) * temperature**2
 
 
-def vpr_training_loss(
-    profile: str,
+def day_fake_classification_loss(
     day: torch.Tensor,
     fake: torch.Tensor,
     labels: torch.Tensor,
     classifier: MarginCosineClassifier,
-    *,
-    teacher_day: torch.Tensor | None = None,
-    pair_weight: float = 0.5,
-    pair_target: float = 0.85,
-    relation_weight: float = 0.5,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    fake_classification = F.cross_entropy(classifier(fake, labels), labels)
-    components = {"classification_fake": fake_classification}
-    if profile == "v0":
-        return fake_classification, components
-    if profile == "v1":
-        if teacher_day is None:
-            raise ValueError("V1 IKT requires teacher descriptors")
-        auxiliary = ikt_loss(teacher_day, fake, classifier)
-        components["ikt"] = auxiliary
-        return fake_classification + auxiliary, components
-
-    day_classification = F.cross_entropy(classifier(day, labels), labels)
-    cross_domain = pair_hinge(day, fake, pair_target)
-    total = 0.5 * (fake_classification + day_classification) + pair_weight * cross_domain
-    components.update(classification_day=day_classification, pair=cross_domain)
-    if profile == "v3":
-        if teacher_day is None:
-            raise ValueError("V3 relation distillation requires teacher descriptors")
-        relation = relation_distillation(teacher_day, fake)
-        components["relation"] = relation
-        total = total + relation_weight * relation
-    return total, components
+    day_loss = F.cross_entropy(classifier(day, labels), labels)
+    fake_loss = F.cross_entropy(classifier(fake, labels), labels)
+    return 0.5 * (day_loss + fake_loss), {
+        "classification_day": day_loss,
+        "classification_fake": fake_loss,
+    }
 
 
-def configurable_vpr_loss(
-    train_domains: str,
-    auxiliary: str,
-    day: torch.Tensor | None,
-    fake: torch.Tensor | None,
-    labels: torch.Tensor,
-    classifier: MarginCosineClassifier,
+def cross_domain_neighborhood_loss(
+    teacher_anchors: torch.Tensor,
+    teacher_candidates: torch.Tensor,
+    fake_anchors: torch.Tensor,
+    day_anchors: torch.Tensor,
+    student_day_candidates: torch.Tensor,
+    anchor_labels: torch.Tensor,
+    candidate_labels: torch.Tensor,
+    anchor_image_keys: torch.Tensor,
+    candidate_image_keys: torch.Tensor,
     *,
-    teacher_day: torch.Tensor | None = None,
-    pair_weight: float = 0.5,
-    pair_target: float = 0.85,
-    relation_weight: float = 0.5,
-    preservation_weight: float = 1.0,
-    preservation_target: float = 0.95,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    components = {}
-    classification = []
-    if train_domains in {"day", "day_fake"}:
-        if day is None:
-            raise ValueError("Day descriptors are required by train_domains")
-        components["classification_day"] = F.cross_entropy(classifier(day, labels), labels)
-        classification.append(components["classification_day"])
-    if train_domains in {"fake", "day_fake"}:
-        if fake is None:
-            raise ValueError("Fake descriptors are required by train_domains")
-        components["classification_fake"] = F.cross_entropy(classifier(fake, labels), labels)
-        classification.append(components["classification_fake"])
-    if not classification:
-        raise ValueError("At least one training domain is required")
-    total = torch.stack(classification).mean()
-    if auxiliary == "pair":
-        if day is None or fake is None:
-            raise ValueError("Pair auxiliary requires day_fake training")
-        components["pair"] = pair_hinge(day, fake, pair_target)
-        total = total + pair_weight * components["pair"]
-    elif auxiliary == "ikt":
-        if fake is None or teacher_day is None:
-            raise ValueError("IKT requires fake and frozen day-teacher descriptors")
-        components["ikt"] = ikt_loss(teacher_day, fake, classifier)
-        total = total + components["ikt"]
-    elif auxiliary == "relation":
-        if fake is None or teacher_day is None:
-            raise ValueError("Relation auxiliary requires fake and teacher descriptors")
-        components["relation"] = relation_distillation(teacher_day, fake)
-        total = total + relation_weight * components["relation"]
-    elif auxiliary == "preserve_day":
-        if day is None or teacher_day is None:
-            raise ValueError("Day preservation requires day and frozen teacher descriptors")
-        components["preservation_day"] = preservation_hinge(
-            teacher_day, day, preservation_target
+    relation_temperature: float = 0.07,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+    """Distill SALAD day neighborhoods without confidence gating."""
+    if teacher_anchors.shape[0] != fake_anchors.shape[0] or fake_anchors.shape != day_anchors.shape:
+        raise ValueError("CDND anchor tensors must share the same batch shape")
+    if teacher_candidates.shape[0] != student_day_candidates.shape[0]:
+        raise ValueError("Teacher and student candidate counts must match")
+    if candidate_labels.shape[0] != teacher_candidates.shape[0]:
+        raise ValueError("Candidate metadata does not match candidate descriptors")
+
+    teacher_anchor = F.normalize(teacher_anchors.detach().float(), dim=1)
+    teacher_candidate = F.normalize(teacher_candidates.detach().float(), dim=1)
+    fake_anchor = F.normalize(fake_anchors.float(), dim=1)
+    day_anchor = F.normalize(day_anchors.float(), dim=1)
+    student_candidate = F.normalize(student_day_candidates.float(), dim=1)
+    valid_candidates = anchor_image_keys[:, None].ne(candidate_image_keys[None, :])
+    same_place = anchor_labels[:, None].eq(candidate_labels[None, :]) & valid_candidates
+    different_place = anchor_labels[:, None].ne(candidate_labels[None, :]) & valid_candidates
+    valid_anchors = same_place.any(dim=1) & different_place.any(dim=1)
+    if not bool(valid_anchors.any()):
+        zero = (fake_anchors.sum() + day_anchors.sum() + student_day_candidates.sum()) * 0.0
+        return zero, zero, {
+            "valid_anchors": torch.zeros((), device=zero.device, dtype=torch.long)
+        }
+
+    valid_candidates = valid_candidates[valid_anchors]
+    teacher_similarity = (teacher_anchor @ teacher_candidate.T)[valid_anchors]
+    fake_anchor = fake_anchor[valid_anchors]
+    day_anchor = day_anchor[valid_anchors]
+    teacher_logits = (teacher_similarity / float(relation_temperature)).masked_fill(
+        ~valid_candidates, -torch.inf
+    )
+    teacher_probability = F.softmax(teacher_logits, dim=1)
+    teacher_log_probability = torch.log(teacher_probability.clamp_min(1e-12))
+
+    def relation_kl(student_anchor: torch.Tensor) -> torch.Tensor:
+        student_logits = (
+            student_anchor @ student_candidate.T / float(relation_temperature)
+        ).masked_fill(~valid_candidates, -torch.inf)
+        student_log_probability = F.log_softmax(student_logits, dim=1)
+        student_log_probability = torch.where(
+            valid_candidates, student_log_probability, torch.zeros_like(student_log_probability)
         )
-        total = total + preservation_weight * components["preservation_day"]
-    elif auxiliary != "none":
-        raise ValueError(f"Unsupported auxiliary: {auxiliary}")
-    return total, components
+        return (
+            teacher_probability * (teacher_log_probability - student_log_probability)
+        ).sum(dim=1).mean()
+
+    return relation_kl(fake_anchor), relation_kl(day_anchor), {
+        "valid_anchors": valid_anchors.sum().detach()
+    }
+
+
+def route_supervised_contrastive_loss(
+    fake_descriptors: torch.Tensor,
+    day_descriptors: torch.Tensor,
+    coordinates: torch.Tensor,
+    yaw_deg: torch.Tensor,
+    image_keys: torch.Tensor,
+    *,
+    positive_radius_m: float = 10.0,
+    positive_yaw_deg: float = 30.0,
+    negative_radius_m: float = 25.0,
+    temperature: float = 0.07,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Supervise fake-to-day retrieval with metric RobotCar train metadata only."""
+    if fake_descriptors.shape != day_descriptors.shape:
+        raise ValueError("Route contrastive descriptors must share a shape")
+    valid_metadata = torch.isfinite(coordinates).all(dim=1) & torch.isfinite(yaw_deg)
+    different_image = image_keys[:, None].ne(image_keys[None, :])
+    distances = torch.cdist(coordinates.float(), coordinates.float())
+    yaw_delta = torch.remainder(
+        yaw_deg[:, None].float() - yaw_deg[None, :].float() + 180.0, 360.0
+    ) - 180.0
+    metadata_pairs = valid_metadata[:, None] & valid_metadata[None, :] & different_image
+    positives = (
+        metadata_pairs
+        & distances.le(float(positive_radius_m))
+        & yaw_delta.abs().le(float(positive_yaw_deg))
+    )
+    negatives = metadata_pairs & distances.gt(float(negative_radius_m))
+    valid_anchors = positives.any(dim=1) & negatives.any(dim=1)
+    if not bool(valid_anchors.any()):
+        zero = (fake_descriptors.sum() + day_descriptors.sum()) * 0.0
+        return zero, {
+            "valid_anchors": torch.zeros((), device=zero.device, dtype=torch.long),
+            "positive_pairs": positives.sum().detach(),
+            "negative_pairs": negatives.sum().detach(),
+        }
+    fake = F.normalize(fake_descriptors.float(), dim=1)
+    day = F.normalize(day_descriptors.float(), dim=1)
+    logits = fake @ day.T / float(temperature)
+    candidates = positives | negatives
+    logits = logits.masked_fill(~candidates, -torch.inf)
+    log_denominator = torch.logsumexp(logits, dim=1)
+    positive_logits = logits.masked_fill(~positives, -torch.inf)
+    log_positive = torch.logsumexp(positive_logits, dim=1)
+    loss = -(log_positive[valid_anchors] - log_denominator[valid_anchors]).mean()
+    return loss, {
+        "valid_anchors": valid_anchors.sum().detach(),
+        "positive_pairs": positives.sum().detach(),
+        "negative_pairs": negatives.sum().detach(),
+    }
+
+
+def mined_route_contrastive_loss(
+    fake_descriptors: torch.Tensor,
+    candidate_descriptors: torch.Tensor,
+    positive_mask: torch.Tensor,
+    negative_mask: torch.Tensor,
+    *,
+    temperature: float = 0.07,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Contrast fake anchors against frozen, offline-mined day candidates."""
+    if candidate_descriptors.ndim != 3:
+        raise ValueError("Mined route candidates must have shape [B,K,D]")
+    if candidate_descriptors.shape[:2] != positive_mask.shape:
+        raise ValueError("Mined route masks do not match candidate descriptors")
+    if positive_mask.shape != negative_mask.shape:
+        raise ValueError("Mined route positive and negative masks must match")
+    if candidate_descriptors.shape[0] != fake_descriptors.shape[0]:
+        raise ValueError("Mined route anchor and candidate batches must match")
+    candidates = positive_mask | negative_mask
+    valid = positive_mask.any(dim=1) & negative_mask.any(dim=1)
+    if not bool(valid.any()):
+        zero = fake_descriptors.sum() * 0.0
+        return zero, {
+            "valid_anchors": torch.zeros((), device=zero.device, dtype=torch.long),
+            "positive_pairs": positive_mask.sum().detach(),
+            "negative_pairs": negative_mask.sum().detach(),
+        }
+    anchors = F.normalize(fake_descriptors.float(), dim=1)
+    frozen_candidates = F.normalize(candidate_descriptors.detach().float(), dim=2)
+    logits = torch.einsum("bd,bkd->bk", anchors, frozen_candidates) / float(temperature)
+    logits = logits.masked_fill(~candidates, -torch.inf)
+    positive_logits = logits.masked_fill(~positive_mask, -torch.inf)
+    loss = -(
+        torch.logsumexp(positive_logits, dim=1)[valid]
+        - torch.logsumexp(logits, dim=1)[valid]
+    ).mean()
+    return loss, {
+        "valid_anchors": valid.sum().detach(),
+        "positive_pairs": positive_mask.sum().detach(),
+        "negative_pairs": negative_mask.sum().detach(),
+    }

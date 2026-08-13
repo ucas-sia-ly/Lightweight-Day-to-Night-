@@ -5,11 +5,8 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-.latex-out/
 runs/
 data/generated/
 reports/
-*.onnx
-*.pdf
-docs/
 data/
+logs/

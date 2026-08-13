@@ -17,6 +17,8 @@ from torch.utils.data import Dataset, Sampler
 from .config import DataConfig
 from .transforms import GeneratorTrainTransform, VPRTransform
 
+FIXED_RANDOM_STATE = 0
+
 
 @dataclass(frozen=True)
 class RobotCarRow:
@@ -120,19 +122,17 @@ def audit_data(config: DataConfig, *, decode: bool = False) -> dict:
 
 
 class BalancedGeneratorDataset(Dataset):
-    """Dataset-uniform A/B sampling with an optional aligned-pair branch."""
+    """Dataset-balanced, unpaired day/night sampling for formal QS-Attn training."""
 
-    def __init__(self, config: DataConfig, length: int, seed: int = 0, paired_probability: float = 0.2):
+    def __init__(self, config: DataConfig, length: int):
         rows = read_generator_manifest(config.generator_manifest)
         grouped: dict[str, dict[str, list]] = {}
         for row in rows:
-            pools = grouped.setdefault(row["dataset"], {"day": [], "night": [], "paired": []})
+            pools = grouped.setdefault(row["dataset"], {"day": [], "night": []})
             if row.get("source_path"):
                 pools["day"].append(row["source_path"])
             if row.get("target_path"):
                 pools["night"].append(row["target_path"])
-            if row.get("paired", "0").lower() in {"1", "true", "yes"}:
-                pools["paired"].append((row["source_path"], row["target_path"]))
         self.grouped = {
             name: pools for name, pools in grouped.items() if pools["day"] and pools["night"]
         }
@@ -143,16 +143,7 @@ class BalancedGeneratorDataset(Dataset):
         self.weights = [float(configured[name]) for name in self.datasets]
         if not self.datasets:
             raise ValueError("No configured dataset weights match the generator manifest")
-        self.paired_datasets = [name for name in self.datasets if self.grouped[name]["paired"]]
-        self.unpaired_datasets = [name for name in self.datasets if name not in self.paired_datasets]
-        self.unpaired_weights = [
-            float(configured[name]) for name in self.unpaired_datasets
-        ]
-        if not self.unpaired_datasets:
-            self.unpaired_datasets, self.unpaired_weights = self.datasets, self.weights
-        self.paired_probability = float(paired_probability)
         self.length = int(length)
-        self.seed = int(seed)
         self.transform = GeneratorTrainTransform(config.load_short_side, config.crop_size)
 
     def __len__(self) -> int:
@@ -164,27 +155,18 @@ class BalancedGeneratorDataset(Dataset):
             return image.convert("RGB")
 
     def __getitem__(self, index: int) -> dict:
-        rng = random.Random(self.seed + int(index) * 1_000_003)
-        paired = bool(self.paired_datasets and rng.random() < self.paired_probability)
-        if paired:
-            dataset = rng.choice(self.paired_datasets)
-            day_path, night_path = rng.choice(self.grouped[dataset]["paired"])
-            source, target = self.transform.paired(
-                self._open(day_path), self._open(night_path), rng=rng
-            )
-        else:
-            dataset = rng.choices(self.unpaired_datasets, weights=self.unpaired_weights, k=1)[0]
-            pools = self.grouped[dataset]
-            day_path, night_path = rng.choice(pools["day"]), rng.choice(pools["night"])
-            source = self.transform(self._open(day_path), rng=rng)
-            target = self.transform(self._open(night_path), rng=rng)
+        rng = random.Random(FIXED_RANDOM_STATE + int(index) * 1_000_003)
+        dataset = rng.choices(self.datasets, weights=self.weights, k=1)[0]
+        pools = self.grouped[dataset]
+        day_path, night_path = rng.choice(pools["day"]), rng.choice(pools["night"])
+        source = self.transform(self._open(day_path), rng=rng)
+        target = self.transform(self._open(night_path), rng=rng)
         return {
             "source": source,
             "target": target,
             "source_path": day_path,
             "target_path": night_path,
             "dataset": dataset,
-            "paired": paired,
         }
 
 
@@ -247,7 +229,22 @@ class PairedVPRDataset(Dataset):
             "fake": fake,
             "label": torch.tensor(self.place_to_label[row["global_place_id"]], dtype=torch.long),
             "image_id": row["image_id"],
+            "image_key": torch.tensor(
+                int(
+                    hashlib.sha1(
+                        f'{row.get("dataset", "unknown")}:{row["image_id"]}'.encode("utf-8")
+                    ).hexdigest()[:15],
+                    16,
+                ),
+                dtype=torch.long,
+            ),
             "dataset": row.get("dataset", "unknown"),
+            "manifest_index": torch.tensor(row["manifest_index"], dtype=torch.long),
+            "utm_xy": torch.tensor(
+                [float(row.get("utm_e") or "nan"), float(row.get("utm_n") or "nan")],
+                dtype=torch.float32,
+            ),
+            "yaw_deg": torch.tensor(float(row.get("yaw") or "nan"), dtype=torch.float32),
         }
         if self.teacher_cache is not None:
             sample["teacher_descriptor"] = self.teacher_cache.descriptor(
@@ -281,13 +278,149 @@ class PairedVPRDataset(Dataset):
         return torch.tensor(weights, dtype=torch.double)
 
 
+class PKBalancedBatchSampler(Sampler[list[int]]):
+    """Deterministic single-dataset P-place/K-image batches with resumable cursor."""
+
+    def __init__(
+        self,
+        rows: list[dict],
+        quotas: dict[str, int],
+        places_per_batch: int = 4,
+        images_per_place: int = 2,
+    ):
+        self.rows = rows
+        self.quotas = {str(key): int(value) for key, value in quotas.items()}
+        self.places_per_batch = int(places_per_batch)
+        self.images_per_place = int(images_per_place)
+        self.batch_size = self.places_per_batch * self.images_per_place
+        self.epoch = 0
+        self.cursor = 0
+        self.by_place: dict[str, dict[str, list[int]]] = {}
+        for index, row in enumerate(rows):
+            dataset = row.get("dataset", "unknown")
+            place = row["global_place_id"]
+            self.by_place.setdefault(dataset, {}).setdefault(place, []).append(index)
+        if set(self.quotas) != set(self.by_place):
+            raise ValueError("PK quotas must name every available dataset")
+        if self.batch_size < 1:
+            raise ValueError("PK batch size must be positive")
+        for dataset, places in self.by_place.items():
+            if len(places) < self.places_per_batch:
+                raise ValueError(
+                    f"PK sampler needs {self.places_per_batch} places in {dataset}, got {len(places)}"
+                )
+            too_small = [place for place, values in places.items() if len(values) < self.images_per_place]
+            if too_small:
+                raise ValueError(
+                    f"PK sampler needs {self.images_per_place} distinct images per place; "
+                    f"{dataset} has {len(too_small)} undersized places"
+                )
+            if self.quotas[dataset] <= 0 or self.quotas[dataset] % self.batch_size:
+                raise ValueError("Every PK quota must be positive and divisible by P*K")
+        self._batches: list[list[int]] | None = None
+
+    def __len__(self) -> int:
+        return sum(self.quotas.values()) // self.batch_size
+
+    def set_epoch(self, epoch: int) -> None:
+        epoch = int(epoch)
+        if epoch != self.epoch:
+            self.epoch = epoch
+            self.cursor = 0
+            self._batches = None
+
+    def _epoch_batches(self) -> list[list[int]]:
+        if self._batches is not None:
+            return self._batches
+        batches: list[list[int]] = []
+        for dataset in sorted(self.quotas):
+            salt = int(hashlib.sha1(dataset.encode("utf-8")).hexdigest()[:8], 16)
+            rng = random.Random(FIXED_RANDOM_STATE + self.epoch * 1_000_003 + salt)
+            places = sorted(self.by_place[dataset])
+            count = self.quotas[dataset] // self.batch_size
+            place_cycle: list[str] = []
+            for _ in range(count):
+                if len(place_cycle) < self.places_per_batch:
+                    refill = list(places)
+                    rng.shuffle(refill)
+                    place_cycle.extend(refill)
+                selected = place_cycle[: self.places_per_batch]
+                del place_cycle[: self.places_per_batch]
+                # A cycle boundary can duplicate a place; repair deterministically.
+                if len(set(selected)) != self.places_per_batch:
+                    available = [place for place in places if place not in selected]
+                    for position in range(self.places_per_batch):
+                        if selected.count(selected[position]) > 1:
+                            selected[position] = available.pop(0)
+                batch = []
+                for place in selected:
+                    batch.extend(rng.sample(self.by_place[dataset][place], self.images_per_place))
+                batches.append(batch)
+        random.Random(FIXED_RANDOM_STATE + self.epoch * 1_000_003 + 97).shuffle(batches)
+        self._batches = batches
+        return batches
+
+    def __iter__(self):
+        batches = self._epoch_batches()
+        while self.cursor < len(batches):
+            batch = batches[self.cursor]
+            self.cursor += 1
+            yield list(batch)
+
+    def state_dict(self) -> dict:
+        return {
+            "kind": "pk_balanced",
+            "epoch": self.epoch,
+            "cursor": self.cursor,
+            "fixed_random_state": FIXED_RANDOM_STATE,
+            "quotas": dict(self.quotas),
+            "places_per_batch": self.places_per_batch,
+            "images_per_place": self.images_per_place,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        expected = {
+            "kind": "pk_balanced",
+            "fixed_random_state": FIXED_RANDOM_STATE,
+            "quotas": self.quotas,
+            "places_per_batch": self.places_per_batch,
+            "images_per_place": self.images_per_place,
+        }
+        mismatches = {
+            key: (state.get(key), value)
+            for key, value in expected.items()
+            if (
+                state.get(key, state.get("seed") if key == "fixed_random_state" else None)
+                != value
+            )
+        }
+        if mismatches:
+            raise ValueError(f"PK sampler state does not match: {mismatches}")
+        self.epoch = int(state["epoch"])
+        self.cursor = int(state["cursor"])
+        self._batches = None
+        if not 0 <= self.cursor <= len(self):
+            raise ValueError("PK sampler cursor is outside the epoch")
+
+    def statistics(self) -> dict[str, dict[str, float | int]]:
+        return {
+            dataset: {
+                "quota": quota,
+                "batches": quota // self.batch_size,
+                "places": len(self.by_place[dataset]),
+                "places_per_batch": self.places_per_batch,
+                "images_per_place": self.images_per_place,
+            }
+            for dataset, quota in self.quotas.items()
+        }
+
+
 class RollingBalancedSampler(Sampler[int]):
     """Take deterministic rolling windows from place-balanced dataset cycles."""
 
-    def __init__(self, rows: list[dict], quotas: dict[str, int], seed: int = 0):
+    def __init__(self, rows: list[dict], quotas: dict[str, int]):
         self.rows = rows
         self.quotas = {str(key): int(value) for key, value in quotas.items()}
-        self.seed = int(seed)
         self.epoch = 0
         self.by_dataset: dict[str, list[int]] = {}
         self.by_place: dict[str, dict[str, list[int]]] = {}
@@ -311,7 +444,7 @@ class RollingBalancedSampler(Sampler[int]):
 
     def _new_cycle(self, dataset: str, cycle: int) -> list[int]:
         salt = int(hashlib.sha1(dataset.encode()).hexdigest()[:8], 16)
-        rng = random.Random(self.seed + salt + cycle * 1_000_003)
+        rng = random.Random(FIXED_RANDOM_STATE + salt + cycle * 1_000_003)
         places = sorted(self.by_place[dataset])
         rng.shuffle(places)
         images = {place: list(self.by_place[dataset][place]) for place in places}
@@ -366,7 +499,7 @@ class RollingBalancedSampler(Sampler[int]):
         }
         self._last_epoch_indices = by_dataset
         output = [index for values in by_dataset.values() for index in values]
-        random.Random(self.seed + self.epoch * 1_000_003 + 97).shuffle(output)
+        random.Random(FIXED_RANDOM_STATE + self.epoch * 1_000_003 + 97).shuffle(output)
         return iter(output)
 
     def statistics(self) -> dict[str, dict[str, float | int]]:
@@ -391,10 +524,9 @@ class RollingBalancedSampler(Sampler[int]):
 class CoverageBalancedSampler(Sampler[int]):
     """Deterministic full coverage followed by place-balanced quota filling."""
 
-    def __init__(self, rows: list[dict], quotas: dict[str, int], seed: int = 0):
+    def __init__(self, rows: list[dict], quotas: dict[str, int]):
         self.rows = rows
         self.quotas = {str(key): int(value) for key, value in quotas.items()}
-        self.seed = int(seed)
         self.epoch = 0
         available = {row.get("dataset", "unknown") for row in rows}
         if set(self.quotas) != available:
@@ -421,7 +553,7 @@ class CoverageBalancedSampler(Sampler[int]):
 
     def _dataset_indices(self, dataset: str) -> list[int]:
         salt = int(hashlib.sha1(dataset.encode()).hexdigest()[:8], 16)
-        rng = random.Random(self.seed + self.epoch * 1_000_003 + salt)
+        rng = random.Random(FIXED_RANDOM_STATE + self.epoch * 1_000_003 + salt)
         covered = list(self.by_dataset[dataset])
         rng.shuffle(covered)
         output = covered
@@ -449,7 +581,7 @@ class CoverageBalancedSampler(Sampler[int]):
         indices = []
         for dataset in sorted(self.quotas):
             indices.extend(self._dataset_indices(dataset))
-        rng = random.Random(self.seed + self.epoch * 1_000_003 + 97)
+        rng = random.Random(FIXED_RANDOM_STATE + self.epoch * 1_000_003 + 97)
         rng.shuffle(indices)
         return iter(indices)
 

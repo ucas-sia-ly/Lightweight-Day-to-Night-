@@ -1,7 +1,6 @@
 import json
 from dataclasses import replace
 
-import pytest
 import torch
 from PIL import Image
 
@@ -72,17 +71,6 @@ def test_reference_suite_uses_shared_protocol_and_cache(tmp_path, monkeypatch):
 
     monkeypatch.setattr(reference_suite, "evaluate_dual_encoder", evaluate)
 
-    class Tracker:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def summary(self, values):
-            pass
-
-        def finish(self):
-            pass
-
-    monkeypatch.setattr(reference_suite, "TrainingTracker", Tracker)
     output_dir = tmp_path / "output"
     output = reference_suite.evaluate_reference_suite(
         config,
@@ -115,66 +103,3 @@ def test_reference_suite_uses_shared_protocol_and_cache(tmp_path, monkeypatch):
         datasets=("robotcar_project",),
         output_dir=output_dir,
     ) == output
-
-
-def test_compare_suite_bootstrap_requires_same_protocol(tmp_path):
-    def summary(path, fingerprint, success):
-        path.write_text(json.dumps({"datasets": {"robotcar_project": {
-            "protocol_fingerprint": fingerprint,
-            "recalls": {"1": sum(success) / len(success)},
-            "success_by_k": {"1": success},
-        }}}), encoding="utf-8")
-
-    candidate, baseline = tmp_path / "candidate.json", tmp_path / "baseline.json"
-    summary(candidate, "same", [1, 1, 1, 1])
-    summary(baseline, "same", [0, 0, 0, 0])
-    output = reference_suite.compare_suite_bootstrap(
-        candidate, baseline, tmp_path / "comparison.json", samples=100,
-    )
-    payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["datasets"]["robotcar_project"]["paired_bootstrap_r1"]["delta"] == 1.0
-
-    summary(baseline, "different", [0, 0, 0, 0])
-    with pytest.raises(ValueError, match="fingerprint"):
-        reference_suite.compare_suite_bootstrap(
-            candidate, baseline, tmp_path / "invalid.json", samples=100,
-        )
-
-
-def test_compare_suite_bootstrap_marks_preprocessing_control(tmp_path):
-    def summary(path, evaluation):
-        path.write_text(json.dumps({"datasets": {"robotcar_project": {
-            "query_protocol_fingerprint": "same-query",
-            "evaluation_fingerprint": evaluation,
-            "recalls": {"1": 1.0},
-            "success_by_k": {"1": [1, 1]},
-        }}}), encoding="utf-8")
-
-    candidate, baseline = tmp_path / "candidate.json", tmp_path / "baseline.json"
-    summary(candidate, "fit-pad")
-    summary(baseline, "direct-resize")
-    output = reference_suite.compare_suite_bootstrap(
-        candidate, baseline, tmp_path / "comparison.json", samples=10,
-    )
-    payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["datasets"]["robotcar_project"]["strictly_controlled_preprocessing"] is False
-
-
-def test_compare_suite_bootstrap_excludes_invalid_queries(tmp_path):
-    def summary(path, success):
-        path.write_text(json.dumps({"datasets": {"robotcar_project": {
-            "query_protocol_fingerprint": "same-query",
-            "recalls": {"1": success[0]},
-            "valid_by_query": [1, 0],
-            "success_by_k": {"1": success},
-        }}}), encoding="utf-8")
-
-    candidate, baseline = tmp_path / "candidate.json", tmp_path / "baseline.json"
-    summary(candidate, [1, 0])
-    summary(baseline, [0, 1])
-    output = reference_suite.compare_suite_bootstrap(
-        candidate, baseline, tmp_path / "comparison.json", samples=20,
-    )
-    item = json.loads(output.read_text(encoding="utf-8"))["datasets"]["robotcar_project"]
-    assert item["valid_queries"] == 1
-    assert item["paired_bootstrap_r1"]["delta"] == 1.0

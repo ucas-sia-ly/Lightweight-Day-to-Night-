@@ -22,14 +22,13 @@ eval = [
   "faiss-cpu>=1.7.4",
   "pytorch-fid>=0.3.0",
   "scikit-image>=0.21",
+  "timm>=0.9",
+]
+ragtr = [
+  "kornia>=0.8,<0.9",
+  "opencv-python-headless>=4.8",
 ]
 test = ["pytest>=7.4"]
-tracking = ["wandb>=0.16"]
-export = [
-  "onnx>=1.16",
-  "onnxruntime>=1.18",
-  "onnxscript>=0.1",
-]
 
 [project.scripts]
 a2b-lightvpr = "a2b_lightvpr.cli:main"

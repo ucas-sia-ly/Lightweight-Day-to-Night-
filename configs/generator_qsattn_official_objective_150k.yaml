@@ -4,9 +4,7 @@ data:
   generator_manifest: data/manifests_clean_night/generator_train.csv
   vpr_source_manifest: data/manifests_clean_night/vpr_train.csv
   generated_root: data/generated/multidataset_qsattn_official_150k
-  generated_database_root: data/generated/evaluation_databases_qsattn_official_150k
   tokyo_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/tokyo247
-  aachen_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/Aachen-Day-Night
   svox_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/svox
   msls_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/MSLS
   dataset_weights: {darkdriving: 1, robotcar: 6, bdd100k: 6, msls: 3, svox: 1}
@@ -22,18 +20,10 @@ generator:
   workers: 4
   lr: 0.0002
   checkpoint_every: 5000
-  seed: 0
   content_weight: 1.0
   num_patches: 256
   feature_dim: 256
   qs_mode: global
   qs_nce_identity: true
   qs_netf: mlp_sample
-  paired_probability: 0.0
-  paired_charbonnier_weight: 0.0
   amp: true
-tracking:
-  enabled: true
-  project: a2b-lightvpr
-  group: generator-qsattn-official-objective-150k
-  tags: [generator, qsattn, official-objective, identity-nce, no-paired, 150k, seed0]
