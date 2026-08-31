@@ -5,11 +5,6 @@ import json
 
 from .config import apply_overrides, load_config
 from .data import audit_data
-from .external_temporal import (
-    evaluate_gardens_reference,
-    evaluate_gardens_temporal,
-    summarize_gardens_models,
-)
 from .generator.trainer import train_generator
 from .generator.translate import translate_training_set
 from .prepare import build_manifests
@@ -19,12 +14,6 @@ from .reference_models import (
     fetch_reference_model,
 )
 from .reference_suite import evaluate_reference_suite
-from .ragtr import (
-    build_ragtr_geometry_cache,
-    evaluate_robotcar_ragtr,
-    select_robotcar_ragtr,
-    summarize_robotcar_ragtr,
-)
 from .robotcar_temporal import (
     evaluate_robotcar_temporal,
     select_robotcar_temporal,
@@ -34,7 +23,6 @@ from .runtime import benchmark_model
 from .single_run_summary import summarize_cdnd_seed0
 from .trained_suite import SUITE_PROTOCOLS, evaluate_trained_suite
 from .vpr.teacher_cache import cache_relation_teacher
-from .vpr.route_mining import mine_robotcar_route_candidates
 from .vpr.trainer import export_vpr_inference_checkpoint, train_vpr
 
 
@@ -123,53 +111,22 @@ def _parser() -> argparse.ArgumentParser:
     temporal_select.add_argument("--checkpoint", required=True)
     temporal_select.add_argument("--cache", required=True)
     temporal_select.add_argument("--output", required=True)
-    temporal_select.add_argument("--geometry-cache", default="")
-    temporal_select.add_argument("--method", choices=["mgtr-v1", "ragtr"], default="mgtr-v1")
+    temporal_select.add_argument("--method", choices=["clustered-mgtr"], default="clustered-mgtr")
     temporal_evaluate = common("evaluate-robotcar-temporal")
     temporal_evaluate.add_argument("--checkpoint", required=True)
     temporal_evaluate.add_argument("--selection", required=True)
     temporal_evaluate.add_argument("--condition", choices=["night", "day"], required=True)
     temporal_evaluate.add_argument("--cache", required=True)
     temporal_evaluate.add_argument("--output", required=True)
-    temporal_evaluate.add_argument("--ablations-output", default="")
-    temporal_evaluate.add_argument("--geometry-cache", default="")
     temporal_evaluate.add_argument(
-        "--method", choices=["mgtr-v1", "ragtr"], default="mgtr-v1"
+        "--method", choices=["clustered-mgtr"], default="clustered-mgtr"
     )
     temporal_summary = commands.add_parser("summarize-robotcar-temporal")
     for name in ("night", "day", "crica", "salad", "boq", "reference-resources", "output"):
         temporal_summary.add_argument(f"--{name}", required=True)
     temporal_summary.add_argument(
-        "--method", choices=["mgtr-v1", "ragtr"], default="mgtr-v1"
+        "--method", choices=["clustered-mgtr"], default="clustered-mgtr"
     )
-
-    geometry = common("cache-robotcar-geometry")
-    geometry.add_argument("--checkpoint", required=True)
-    geometry.add_argument("--condition", choices=["val", "night", "day"], required=True)
-    geometry.add_argument("--cache", required=True)
-    geometry.add_argument("--geometry-cache", required=True)
-
-    mining = common("mine-robotcar-route")
-    mining.add_argument("--checkpoint", required=True)
-    mining.add_argument("--output", default="")
-
-    gardens = common("evaluate-gardens-temporal")
-    gardens.add_argument("--checkpoint", required=True)
-    gardens.add_argument("--root", required=True)
-    gardens.add_argument("--output-dir", required=True)
-    gardens.add_argument("--method", choices=["mgtr-v1", "ragtr"], default="mgtr-v1")
-    gardens_reference = common("evaluate-gardens-reference")
-    gardens_reference.add_argument("--registry", required=True)
-    gardens_reference.add_argument("--model", required=True)
-    gardens_reference.add_argument("--root", required=True)
-    gardens_reference.add_argument("--output-dir", required=True)
-    gardens_reference.add_argument(
-        "--database-encoder", choices=["adapted", "original"], default="adapted"
-    )
-    gardens_summary = commands.add_parser("summarize-gardens-models")
-    gardens_summary.add_argument("--results-root", required=True)
-    gardens_summary.add_argument("--primary-result", default="")
-    gardens_summary.add_argument("--output", required=True)
     return parser
 
 
@@ -212,22 +169,11 @@ def main(argv=None) -> None:
         ))
         return
     if args.command == "summarize-robotcar-temporal":
-        if args.method == "ragtr":
-            print(summarize_robotcar_ragtr(
-                args.night, args.day, args.salad, args.boq, args.output
-            ))
-        else:
-            print(summarize_robotcar_temporal(
+        print(summarize_robotcar_temporal(
                 args.night, args.day, args.crica, args.salad, args.boq, args.output,
                 args.reference_resources,
             ))
         return
-    if args.command == "summarize-gardens-models":
-        print(summarize_gardens_models(
-            args.results_root, args.output, args.primary_result or None
-        ))
-        return
-
     config = apply_overrides(load_config(args.config), args.set)
     if args.command == "audit-data":
         result = audit_data(config.data, decode=args.decode)
@@ -265,44 +211,12 @@ def main(argv=None) -> None:
             allow_batch_dependent=args.allow_batch_dependent,
         ))
     elif args.command == "select-robotcar-temporal":
-        if args.method == "ragtr":
-            if not args.geometry_cache:
-                raise ValueError("RA-GTR selection requires --geometry-cache")
-            print(select_robotcar_ragtr(
-                config, args.checkpoint, args.output, args.cache, args.geometry_cache
-            ))
-        else:
-            print(select_robotcar_temporal(config, args.checkpoint, args.output, args.cache))
+        print(select_robotcar_temporal(config, args.checkpoint, args.output, args.cache, args.method))
     elif args.command == "evaluate-robotcar-temporal":
-        if args.method == "ragtr":
-            if not args.geometry_cache:
-                raise ValueError("RA-GTR evaluation requires --geometry-cache")
-            print(evaluate_robotcar_ragtr(
+        print(evaluate_robotcar_temporal(
                 config, args.checkpoint, args.selection, args.condition,
-                args.output, args.cache, args.geometry_cache,
+                args.output, args.cache, None, args.method,
             ))
-        else:
-            print(evaluate_robotcar_temporal(
-                config, args.checkpoint, args.selection, args.condition,
-                args.output, args.cache, args.ablations_output or None,
-            ))
-    elif args.command == "cache-robotcar-geometry":
-        print(build_ragtr_geometry_cache(
-            config, args.checkpoint, args.condition, args.cache, args.geometry_cache
-        ))
-    elif args.command == "mine-robotcar-route":
-        print(mine_robotcar_route_candidates(
-            config, args.checkpoint, args.output or None
-        ))
-    elif args.command == "evaluate-gardens-temporal":
-        print(evaluate_gardens_temporal(
-            config, args.checkpoint, args.root, args.output_dir, method=args.method
-        ))
-    elif args.command == "evaluate-gardens-reference":
-        print(evaluate_gardens_reference(
-            config, args.registry, args.model, args.root, args.output_dir,
-            args.database_encoder,
-        ))
     else:
         raise AssertionError(args.command)
 

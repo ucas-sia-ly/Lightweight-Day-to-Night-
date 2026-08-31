@@ -1,0 +1,17 @@
+{
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true,
+        "**/__pycache__": true,
+        "**/.pytest_cache": true,
+        "**/.mypy_cache": true,
+        "**/.ruff_cache": true,
+        "**/bare_jrnl_new_sample4.aux": true,
+        "**/bare_jrnl_new_sample4.log": true,
+        "**/bare_jrnl_new_sample4.gz": true,
+        "**/bare_jrnl_new_sample4.out": true
+    }
+}

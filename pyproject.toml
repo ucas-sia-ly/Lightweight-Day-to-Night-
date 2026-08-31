@@ -11,7 +11,6 @@ dependencies = [
   "numpy>=1.24",
   "Pillow>=9.5",
   "PyYAML>=6.0",
-  "scipy>=1.10",
   "torch>=2.1",
   "torchvision>=0.16",
   "tqdm>=4.65",
@@ -20,13 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 eval = [
   "faiss-cpu>=1.7.4",
-  "pytorch-fid>=0.3.0",
-  "scikit-image>=0.21",
   "timm>=0.9",
-]
-ragtr = [
-  "kornia>=0.8,<0.9",
-  "opencv-python-headless>=4.8",
 ]
 test = ["pytest>=7.4"]
 

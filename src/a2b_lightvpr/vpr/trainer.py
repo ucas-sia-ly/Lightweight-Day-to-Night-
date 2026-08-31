@@ -34,11 +34,9 @@ from .losses import (
     MarginCosineClassifier,
     cross_domain_neighborhood_loss,
     day_fake_classification_loss,
-    mined_route_contrastive_loss,
 )
 from .model import build_descriptor_model, resolve_initial_checkpoint
 from .neighborhood import DatasetNeighborhoodQueue
-from .route_mining import RouteMiningCache
 from .teacher_cache import TeacherDescriptorCache
 
 
@@ -168,7 +166,6 @@ def _vpr_checkpoint(
     samples_seen,
     sampler_state=None,
     relation_queue_state=None,
-    route_mining_fingerprint="",
 ):
     return {
         "schema_version": SCHEMA_VERSION,
@@ -193,7 +190,6 @@ def _vpr_checkpoint(
         "teacher_cache_fingerprint": teacher_cache_fingerprint,
         "sampler_state": sampler_state,
         "relation_queue_state": relation_queue_state,
-        "route_mining_fingerprint": route_mining_fingerprint,
     }
 
 
@@ -293,18 +289,6 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         model_family=cfg.model_family,
         num_clusters=cfg.num_clusters,
     ).to(device)
-    if cfg.finetune_checkpoint:
-        finetune_state = torch.load(
-            Path(cfg.finetune_checkpoint).expanduser().resolve(),
-            map_location="cpu",
-            weights_only=False,
-        )
-        if finetune_state.get("kind") != "vpr_inference":
-            raise ValueError("Route fine-tuning must initialize from a VPR inference checkpoint")
-        declared_dimension = finetune_state.get("descriptor_dim")
-        if declared_dimension is not None and int(declared_dimension) != cfg.descriptor_dim:
-            raise ValueError("Route fine-tuning checkpoint descriptor dimension mismatch")
-        model.load_state_dict(finetune_state["model"], strict=True)
     classifier_device = torch.device("cpu") if cfg.classifier_cpu_offload else device
     classifier = MarginCosineClassifier(
         cfg.descriptor_dim, len(dataset.place_to_label)
@@ -333,10 +317,6 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         DatasetNeighborhoodQueue(cfg.datasets, cfg.relation_queue_size, device)
         if cfg.cross_domain_aux == "cross_domain_relation"
         else None
-    )
-    route_mining_cache = (
-        RouteMiningCache(config, generated_manifest)
-        if cfg.route_contrastive_weight > 0 else None
     )
     start_epoch, best_score, epoch_zero_score = 0, -1.0, -1.0
     stale_epochs, saved_optimizer_step, samples_seen = 0, 0, 0
@@ -370,11 +350,6 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             if state.get("relation_queue_state") is None:
                 raise ValueError("CDND resume checkpoint is missing relation queue state")
             relation_queue.load_state_dict(state["relation_queue_state"])
-        expected_route_fingerprint = (
-            route_mining_cache.fingerprint if route_mining_cache is not None else ""
-        )
-        if state.get("route_mining_fingerprint", "") != expected_route_fingerprint:
-            raise ValueError("VPR resume route mining cache does not match")
 
     epochs = int(smoke_epochs or cfg.epochs)
     best_path = output_dir / "model_best.pt"
@@ -477,34 +452,6 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
                         relation=relation,
                         relation_valid_anchors=relation_stats["valid_anchors"],
                     )
-                if cfg.route_contrastive_weight > 0:
-                    if dataset_name == "robotcar":
-                        mined_descriptors, mined_positive, mined_negative = (
-                            route_mining_cache.candidates(
-                                batch["manifest_index"], device
-                            )
-                        )
-                        route_loss, route_stats = mined_route_contrastive_loss(
-                            fake_descriptor,
-                            mined_descriptors,
-                            mined_positive,
-                            mined_negative,
-                            temperature=cfg.route_contrastive_temperature,
-                        )
-                    else:
-                        route_loss = (fake_descriptor.sum() + day_descriptor.sum()) * 0.0
-                        route_stats = {
-                            "valid_anchors": torch.zeros((), device=device, dtype=torch.long),
-                            "positive_pairs": torch.zeros((), device=device, dtype=torch.long),
-                            "negative_pairs": torch.zeros((), device=device, dtype=torch.long),
-                        }
-                    loss = loss + cfg.route_contrastive_weight * route_loss
-                    components.update(
-                        route_contrastive=route_loss,
-                        route_valid_anchors=route_stats["valid_anchors"],
-                        route_positive_pairs=route_stats["positive_pairs"],
-                        route_negative_pairs=route_stats["negative_pairs"],
-                    )
             loss_divisor = accumulation_divisor(
                 batch_index, len(loader), cfg.gradient_accumulation_steps
             )
@@ -580,7 +527,6 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             samples_seen,
             sampler.state_dict() if hasattr(sampler, "state_dict") else None,
             relation_queue.state_dict() if relation_queue is not None else None,
-            route_mining_cache.fingerprint if route_mining_cache is not None else "",
         )
         atomic_torch_save(state, output_dir / "checkpoints" / "latest.pt")
         if improved:

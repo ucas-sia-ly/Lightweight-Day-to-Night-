@@ -76,7 +76,6 @@ class VPRConfig:
     amp: bool = True
     patience: int = 4
     init_checkpoint: str = ""
-    finetune_checkpoint: str = ""
     resume: str = ""
     min_class_images: int = 4
     min_class_images_by_dataset: dict[str, int] = field(default_factory=dict)
@@ -101,12 +100,6 @@ class VPRConfig:
     relation_queue_size: int = 2048
     relation_temperature: float = 0.07
     relation_day_weight: float = 0.5
-    route_contrastive_weight: float = 0.0
-    route_mining_cache: str = ""
-    route_positive_radius_m: float = 10.0
-    route_positive_yaw_deg: float = 30.0
-    route_negative_radius_m: float = 25.0
-    route_contrastive_temperature: float = 0.07
     pk_places_per_batch: int = 4
     pk_images_per_place: int = 2
 
@@ -273,15 +266,10 @@ def validate_config(config: ExperimentConfig) -> None:
             raise ValueError("PK sampler requires batch_size == pk_places_per_batch * pk_images_per_place")
         if any(value % pk_batch for value in config.vpr.dataset_epoch_quotas.values()):
             raise ValueError("Every PK dataset quota must be divisible by the physical batch size")
-    expected_datasets = (
-        {"robotcar"}
-        if config.vpr.route_contrastive_weight > 0
-        else {"msls", "robotcar", "svox"}
-    )
+    expected_datasets = {"msls", "robotcar", "svox"}
     if set(config.vpr.datasets) != expected_datasets:
         raise ValueError(
-            "Route fine-tuning must use only RobotCar; formal CDND training must use "
-            "exactly msls, robotcar, and svox"
+            "Formal VPR training must use exactly msls, robotcar, and svox"
         )
     if config.vpr.dataset_epoch_quotas and set(config.vpr.dataset_epoch_quotas) != expected_datasets:
         raise ValueError("VPR epoch quotas must match the active training datasets")
@@ -304,27 +292,6 @@ def validate_config(config: ExperimentConfig) -> None:
         raise ValueError("Relation temperature must be positive")
     if config.vpr.relation_weight < 0 or config.vpr.relation_day_weight < 0:
         raise ValueError("Relation loss weights cannot be negative")
-    if config.vpr.route_contrastive_weight < 0:
-        raise ValueError("Route contrastive weight cannot be negative")
-    if config.vpr.route_contrastive_weight > 0:
-        if config.vpr.model_family != "mixvpr" or config.vpr.descriptor_dim != 4096:
-            raise ValueError("Route contrastive fine-tuning requires MixVPR-4096")
-        if config.vpr.cross_domain_aux != "cross_domain_relation":
-            raise ValueError("Route contrastive fine-tuning retains SALAD-CDND")
-        if not config.vpr.route_mining_cache:
-            raise ValueError("Route contrastive fine-tuning requires route_mining_cache")
-        if not config.vpr.finetune_checkpoint:
-            raise ValueError("Route contrastive fine-tuning requires finetune_checkpoint")
-    elif config.vpr.finetune_checkpoint:
-        raise ValueError("finetune_checkpoint is reserved for route contrastive fine-tuning")
-        if config.vpr.epochs != 5 or config.vpr.samples_per_epoch != 60_000:
-            raise ValueError("Route contrastive fine-tuning requires 5 x 60,000 samples")
-        if config.vpr.route_negative_radius_m <= config.vpr.route_positive_radius_m:
-            raise ValueError("Route negatives must be farther than route positives")
-        if config.vpr.route_positive_yaw_deg <= 0:
-            raise ValueError("Route positive yaw threshold must be positive")
-    if config.vpr.route_contrastive_temperature <= 0:
-        raise ValueError("Route contrastive temperature must be positive")
     if config.vpr.database_encoder not in {"adapted", "original"}:
         raise ValueError("vpr.database_encoder must be adapted or original")
     if not 0.0 < config.vpr.scheduler_factor < 1.0:

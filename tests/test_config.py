@@ -77,17 +77,3 @@ def test_official_generator_config_has_no_public_seed():
     assert config.generator.max_steps == 150_000
     assert config.generator.qs_nce_identity
     assert not hasattr(config.generator, "seed")
-
-
-def test_route_finetune_config_is_explicit_and_fixed_budget():
-    config = load_config("configs/vpr_cdnd_route_4096.yaml")
-    assert config.vpr.descriptor_dim == 4096
-    assert config.vpr.route_contrastive_weight == pytest.approx(0.25)
-    assert config.vpr.epochs == 5
-    assert config.vpr.samples_per_epoch == 60_000
-    assert config.vpr.epochs * config.vpr.samples_per_epoch == 300_000
-    assert config.vpr.epoch_one_max_recall_drop == 0
-    assert config.vpr.datasets == ("robotcar",)
-    assert config.vpr.dataset_epoch_quotas == {"robotcar": 60_000}
-    assert config.vpr.train_domains == "day_fake"
-    assert config.vpr.finetune_checkpoint.endswith("cdnd_4096/salad_no_gate_seed0/model_best.pt")

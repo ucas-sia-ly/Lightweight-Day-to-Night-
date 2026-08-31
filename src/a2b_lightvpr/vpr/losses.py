@@ -53,8 +53,6 @@ def day_fake_classification_loss(
         "classification_day": day_loss,
         "classification_fake": fake_loss,
     }
-
-
 def cross_domain_neighborhood_loss(
     teacher_anchors: torch.Tensor,
     teacher_candidates: torch.Tensor,
@@ -115,98 +113,4 @@ def cross_domain_neighborhood_loss(
 
     return relation_kl(fake_anchor), relation_kl(day_anchor), {
         "valid_anchors": valid_anchors.sum().detach()
-    }
-
-
-def route_supervised_contrastive_loss(
-    fake_descriptors: torch.Tensor,
-    day_descriptors: torch.Tensor,
-    coordinates: torch.Tensor,
-    yaw_deg: torch.Tensor,
-    image_keys: torch.Tensor,
-    *,
-    positive_radius_m: float = 10.0,
-    positive_yaw_deg: float = 30.0,
-    negative_radius_m: float = 25.0,
-    temperature: float = 0.07,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Supervise fake-to-day retrieval with metric RobotCar train metadata only."""
-    if fake_descriptors.shape != day_descriptors.shape:
-        raise ValueError("Route contrastive descriptors must share a shape")
-    valid_metadata = torch.isfinite(coordinates).all(dim=1) & torch.isfinite(yaw_deg)
-    different_image = image_keys[:, None].ne(image_keys[None, :])
-    distances = torch.cdist(coordinates.float(), coordinates.float())
-    yaw_delta = torch.remainder(
-        yaw_deg[:, None].float() - yaw_deg[None, :].float() + 180.0, 360.0
-    ) - 180.0
-    metadata_pairs = valid_metadata[:, None] & valid_metadata[None, :] & different_image
-    positives = (
-        metadata_pairs
-        & distances.le(float(positive_radius_m))
-        & yaw_delta.abs().le(float(positive_yaw_deg))
-    )
-    negatives = metadata_pairs & distances.gt(float(negative_radius_m))
-    valid_anchors = positives.any(dim=1) & negatives.any(dim=1)
-    if not bool(valid_anchors.any()):
-        zero = (fake_descriptors.sum() + day_descriptors.sum()) * 0.0
-        return zero, {
-            "valid_anchors": torch.zeros((), device=zero.device, dtype=torch.long),
-            "positive_pairs": positives.sum().detach(),
-            "negative_pairs": negatives.sum().detach(),
-        }
-    fake = F.normalize(fake_descriptors.float(), dim=1)
-    day = F.normalize(day_descriptors.float(), dim=1)
-    logits = fake @ day.T / float(temperature)
-    candidates = positives | negatives
-    logits = logits.masked_fill(~candidates, -torch.inf)
-    log_denominator = torch.logsumexp(logits, dim=1)
-    positive_logits = logits.masked_fill(~positives, -torch.inf)
-    log_positive = torch.logsumexp(positive_logits, dim=1)
-    loss = -(log_positive[valid_anchors] - log_denominator[valid_anchors]).mean()
-    return loss, {
-        "valid_anchors": valid_anchors.sum().detach(),
-        "positive_pairs": positives.sum().detach(),
-        "negative_pairs": negatives.sum().detach(),
-    }
-
-
-def mined_route_contrastive_loss(
-    fake_descriptors: torch.Tensor,
-    candidate_descriptors: torch.Tensor,
-    positive_mask: torch.Tensor,
-    negative_mask: torch.Tensor,
-    *,
-    temperature: float = 0.07,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Contrast fake anchors against frozen, offline-mined day candidates."""
-    if candidate_descriptors.ndim != 3:
-        raise ValueError("Mined route candidates must have shape [B,K,D]")
-    if candidate_descriptors.shape[:2] != positive_mask.shape:
-        raise ValueError("Mined route masks do not match candidate descriptors")
-    if positive_mask.shape != negative_mask.shape:
-        raise ValueError("Mined route positive and negative masks must match")
-    if candidate_descriptors.shape[0] != fake_descriptors.shape[0]:
-        raise ValueError("Mined route anchor and candidate batches must match")
-    candidates = positive_mask | negative_mask
-    valid = positive_mask.any(dim=1) & negative_mask.any(dim=1)
-    if not bool(valid.any()):
-        zero = fake_descriptors.sum() * 0.0
-        return zero, {
-            "valid_anchors": torch.zeros((), device=zero.device, dtype=torch.long),
-            "positive_pairs": positive_mask.sum().detach(),
-            "negative_pairs": negative_mask.sum().detach(),
-        }
-    anchors = F.normalize(fake_descriptors.float(), dim=1)
-    frozen_candidates = F.normalize(candidate_descriptors.detach().float(), dim=2)
-    logits = torch.einsum("bd,bkd->bk", anchors, frozen_candidates) / float(temperature)
-    logits = logits.masked_fill(~candidates, -torch.inf)
-    positive_logits = logits.masked_fill(~positive_mask, -torch.inf)
-    loss = -(
-        torch.logsumexp(positive_logits, dim=1)[valid]
-        - torch.logsumexp(logits, dim=1)[valid]
-    ).mean()
-    return loss, {
-        "valid_anchors": valid.sum().detach(),
-        "positive_pairs": positive_mask.sum().detach(),
-        "negative_pairs": negative_mask.sum().detach(),
     }

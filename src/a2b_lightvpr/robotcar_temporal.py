@@ -4,7 +4,6 @@ import json
 import os
 import time
 from dataclasses import asdict, dataclass
-from itertools import product
 from pathlib import Path
 
 import numpy as np
@@ -18,24 +17,21 @@ from .transforms import VPRTransform
 
 
 RAW_TOP_K = 100
-NMS_RADIUS_M = 5.0
-NMS_YAW_DEG = 30.0
-MOTION_SIGMA_M = 5.0
 DISTANCES_M = (5.0, 10.0, 25.0, 50.0)
 YAWS_DEG = (10.0, 30.0, None)
 RECALLS = (1, 5, 10)
+TEMPORAL_DESCRIPTOR_DIMS = (512,)
+CLUSTERED_WINDOWS = (1, 3, 5, 7, 9)
+CLUSTER_GAP_FRAMES = 2
+CLUSTER_RADIUS_FRAMES = 5
 
 
 @dataclass(frozen=True)
-class TemporalParameters:
+class ClusteredTemporalParameters:
     window_size: int
-    top_k: int
-    transition_radius_m: float
-    motion_weight: float
-    raw_top_k: int = RAW_TOP_K
-    nms_radius_m: float = NMS_RADIUS_M
-    nms_yaw_deg: float = NMS_YAW_DEG
-    motion_sigma_m: float = MOTION_SIGMA_M
+    top_k: int = 10
+    cluster_gap_frames: int = CLUSTER_GAP_FRAMES
+    center_radius_frames: int = CLUSTER_RADIUS_FRAMES
 
 
 def _condition_rows(config, condition: str):
@@ -115,7 +111,7 @@ def _expected_cache_metadata(config, checkpoint: Path, condition: str, database,
     return {
         "schema": "robotcar_temporal_cache_v1",
         "condition": condition,
-        "descriptor_dim": 512,
+        "descriptor_dim": int(config.vpr.descriptor_dim),
         "checkpoint_sha256": file_sha256(checkpoint),
         "manifest_sha256": file_sha256(config.data.robotcar_manifest),
         "query_protocol_fingerprint": query_fingerprint,
@@ -127,8 +123,9 @@ def _expected_cache_metadata(config, checkpoint: Path, condition: str, database,
 
 
 def build_robotcar_temporal_cache(config, checkpoint: str | Path, condition: str, cache: str | Path) -> Path:
-    if config.vpr.descriptor_dim != 512:
-        raise ValueError("MGTR requires a 512-dimensional MixVPR checkpoint")
+    descriptor_dim = int(config.vpr.descriptor_dim)
+    if descriptor_dim not in TEMPORAL_DESCRIPTOR_DIMS:
+        raise ValueError("TCR requires a 512-dimensional MixVPR checkpoint")
     checkpoint_path = Path(checkpoint).expanduser().resolve()
     database, original_queries, split = _condition_rows(config, condition)
     order, starts, deltas = ordered_motion_deltas(original_queries)
@@ -152,8 +149,11 @@ def build_robotcar_temporal_cache(config, checkpoint: str | Path, condition: str
                     return cache_path
 
     model, state, _ = load_vpr_model(config, checkpoint_path)
-    if int(getattr(model, "descriptor_dim", 0)) != 512 or int(state.get("descriptor_dim", 512)) != 512:
-        raise ValueError("MGTR checkpoint descriptor dimension must be 512")
+    if (
+        int(getattr(model, "descriptor_dim", 0)) != descriptor_dim
+        or int(state.get("descriptor_dim", descriptor_dim)) != descriptor_dim
+    ):
+        raise ValueError("TCR checkpoint descriptor dimension does not match the config")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval().to(device)
     transform = VPRTransform(config.vpr.image_height, config.vpr.image_width)
@@ -214,86 +214,30 @@ def load_robotcar_temporal_cache(path: str | Path) -> tuple[dict, dict[str, np.n
     return metadata, arrays
 
 
-def circular_yaw_difference(first: float, second: float) -> float:
-    return abs((float(first) - float(second) + 180.0) % 360.0 - 180.0)
+def _database_frame_positions(database):
+    positions = np.full(len(database), -1, dtype=np.int64)
+    routes = np.empty(len(database), dtype=object)
+    grouped = {}
+    for index, row in enumerate(database):
+        route = str(getattr(row, "traverse", "single"))
+        routes[index] = route
+        grouped.setdefault(route, []).append(index)
+    for route, indices in grouped.items():
+        ordered = sorted(indices, key=lambda i: (int(getattr(database[i], "timestamp", i)), i))
+        for position, index in enumerate(ordered):
+            positions[index] = position
+    return positions, routes
 
 
-def spatial_nms(
-    raw_indices: np.ndarray,
-    raw_scores: np.ndarray,
-    database_xy: np.ndarray,
-    database_yaw: np.ndarray,
-    top_k: int,
-    *,
-    enabled: bool = True,
-    radius_m: float = NMS_RADIUS_M,
-    yaw_deg: float = NMS_YAW_DEG,
-) -> tuple[np.ndarray, np.ndarray]:
-    if not enabled:
-        return raw_indices[:top_k].astype(np.int64), raw_scores[:top_k].astype(np.float64)
-    kept_indices = []
-    kept_scores = []
-    radius_squared = float(radius_m) ** 2
-    for raw_index, raw_score in zip(raw_indices, raw_scores):
-        index = int(raw_index)
-        duplicate = False
-        x, y = database_xy[index]
-        for kept in kept_indices:
-            kept_x, kept_y = database_xy[kept]
-            if (
-                (x - kept_x) ** 2 + (y - kept_y) ** 2 <= radius_squared
-                and circular_yaw_difference(database_yaw[index], database_yaw[kept]) <= yaw_deg
-            ):
-                duplicate = True
-                break
-        if not duplicate:
-            kept_indices.append(index)
-            kept_scores.append(float(raw_score))
-            if len(kept_indices) == top_k:
-                break
-    return np.asarray(kept_indices, dtype=np.int64), np.asarray(kept_scores, dtype=np.float64)
-
-
-def _appearance_scores(scores: np.ndarray) -> np.ndarray:
-    if not len(scores):
-        return scores.astype(np.float64)
-    denominator = float(scores[0] - scores[-1])
-    return (scores - scores[-1]) / (denominator + 1e-8)
-
-
-def _huber(values: np.ndarray) -> np.ndarray:
-    absolute = np.abs(values)
-    return np.where(absolute <= 1.0, 0.5 * absolute**2, absolute - 0.5)
-
-
-def _ending_path_scores(
-    candidate_indices: list[np.ndarray],
-    candidate_scores: list[np.ndarray],
-    database_xy: np.ndarray,
-    motion_deltas: np.ndarray,
-    parameters: TemporalParameters,
-) -> np.ndarray | None:
-    scores = _appearance_scores(candidate_scores[0])
-    if not len(scores):
-        return None
-    for step in range(1, len(candidate_indices)):
-        previous = candidate_indices[step - 1]
-        current = candidate_indices[step]
-        if not len(previous) or not len(current):
-            return None
-        distances = np.linalg.norm(
-            database_xy[previous][:, None, :] - database_xy[current][None, :, :], axis=2
-        )
-        delta = float(motion_deltas[step])
-        valid = distances <= delta + parameters.transition_radius_m
-        residual = np.abs(distances - delta) / parameters.motion_sigma_m
-        transitions = scores[:, None] - parameters.motion_weight * _huber(residual)
-        transitions[~valid] = -np.inf
-        best = transitions.max(axis=0)
-        scores = _appearance_scores(candidate_scores[step]) + best
-        if not np.isfinite(scores).any():
-            return None
-    return scores
+def _chain_clusters(values, scores, routes, gap):
+    order = sorted(range(len(values)), key=lambda i: (routes[i], int(values[i]), i))
+    clusters = []
+    for item in order:
+        if not clusters or routes[item] != routes[clusters[-1][-1]] or values[item] - values[clusters[-1][-1]] > gap:
+            clusters.append([item])
+        else:
+            clusters[-1].append(item)
+    return clusters
 
 
 def _append_raw_candidates(ranked: np.ndarray, raw: np.ndarray) -> np.ndarray:
@@ -307,87 +251,57 @@ def _append_raw_candidates(ranked: np.ndarray, raw: np.ndarray) -> np.ndarray:
     return np.asarray(output[: len(raw)], dtype=np.int32)
 
 
-def rerank_temporal(
-    raw_indices: np.ndarray,
-    raw_scores: np.ndarray,
-    database_xy: np.ndarray,
-    database_yaw: np.ndarray,
-    motion_deltas: np.ndarray,
-    sequence_starts: np.ndarray,
-    parameters: TemporalParameters,
-    *,
-    use_nms: bool = True,
-) -> tuple[np.ndarray, list[dict], np.ndarray]:
-    """Rerank from scalar motion only; query absolute positions are intentionally absent."""
-    query_count, raw_count = raw_indices.shape
-    if any(len(value) != query_count for value in (raw_scores, motion_deltas, sequence_starts)):
-        raise ValueError("Temporal cache arrays have incompatible query counts")
-    candidates = []
-    nms_timings = np.empty(query_count, dtype=np.float64)
-    for index in range(query_count):
-        nms_started = time.perf_counter()
-        candidates.append(spatial_nms(
-            raw_indices[index], raw_scores[index], database_xy, database_yaw,
-            parameters.top_k, enabled=use_nms,
-            radius_m=parameters.nms_radius_m, yaw_deg=parameters.nms_yaw_deg,
-        ))
-        nms_timings[index] = (time.perf_counter() - nms_started) * 1000.0
-    rankings = np.empty((query_count, raw_count), dtype=np.int32)
-    diagnostics = []
-    timings = np.empty(query_count, dtype=np.float64)
+def rerank_clustered_temporal(
+    raw_indices, raw_scores, database_positions, database_routes,
+    sequence_starts, parameters: ClusteredTemporalParameters,
+):
+    count, raw_count = raw_indices.shape
+    if parameters.window_size not in CLUSTERED_WINDOWS or parameters.window_size % 2 == 0:
+        raise ValueError("TCR window must be one of 1,3,5,7,9")
+    output = raw_indices.copy().astype(np.int32)
+    diagnostics, timings = [], np.zeros(count, dtype=np.float64)
     sequence_start = 0
-    for query_index in range(query_count):
+    sequence_starts_array = np.asarray(sequence_starts, dtype=bool)
+    start_indices = np.flatnonzero(sequence_starts_array).tolist()
+    sequence_end_by_query = np.empty(count, dtype=np.int64)
+    for seq_start, seq_end in zip(start_indices, start_indices[1:] + [count]):
+        sequence_end_by_query[seq_start:seq_end] = seq_end
+    half = parameters.window_size // 2
+    for target in range(count):
         started = time.perf_counter()
-        if bool(sequence_starts[query_index]):
-            sequence_start = query_index
-        available = query_index - sequence_start + 1
-        maximum_window = min(parameters.window_size, available)
-        if maximum_window == 1:
-            rankings[query_index] = raw_indices[query_index]
-            reason = "warmup_single"
-            used_window = 1
+        if bool(sequence_starts[target]):
+            sequence_start = target
+        start = max(sequence_start, target - half)
+        end = min(int(sequence_end_by_query[target]), target + half + 1)
+        if end - start == 1:
+            reason = "single_frame"
         else:
-            ending_scores = None
-            used_window = 1
-            for window in range(maximum_window, 1, -1):
-                start = query_index - window + 1
-                ending_scores = _ending_path_scores(
-                    [candidates[item][0] for item in range(start, query_index + 1)],
-                    [candidates[item][1] for item in range(start, query_index + 1)],
-                    database_xy,
-                    motion_deltas[start : query_index + 1],
-                    parameters,
-                )
-                if ending_scores is not None:
-                    used_window = window
-                    break
-            if ending_scores is None:
-                rankings[query_index] = raw_indices[query_index]
-                reason = "no_valid_transition_raw_top1"
+            top1 = raw_indices[start:end, 0]
+            values = database_positions[top1]
+            routes = database_routes[top1]
+            clusters = _chain_clusters(values, raw_scores[start:end, 0], routes, parameters.cluster_gap_frames)
+            clusters.sort(key=lambda c: (-len(c), -float(np.mean(raw_scores[start:end, 0][c])), int(np.median(values[c]))))
+            chosen = clusters[0]
+            center = int(np.median(values[chosen]))
+            allowed = set()
+            for rank in range(min(parameters.top_k, raw_count)):
+                candidate = int(raw_indices[target, rank])
+                if candidate >= 0 and database_routes[candidate] == routes[chosen[0]] and abs(int(database_positions[candidate]) - center) <= parameters.center_radius_frames:
+                    allowed.add(candidate)
+            if not allowed:
+                for rank in range(raw_count):
+                    candidate = int(raw_indices[target, rank])
+                    if candidate >= 0 and database_routes[candidate] == routes[chosen[0]] and abs(int(database_positions[candidate]) - center) <= parameters.center_radius_frames:
+                        allowed.add(candidate)
+            if allowed:
+                ranked = sorted(allowed, key=lambda c: (-float(raw_scores[target, np.flatnonzero(raw_indices[target] == c)[0]]), c))
+                output[target] = _append_raw_candidates(np.asarray(ranked, dtype=np.int32), raw_indices[target])
+                reason = "cluster_center" if len(allowed) else "single_frame"
             else:
-                current_candidates = candidates[query_index][0]
-                order = np.argsort(ending_scores)[::-1]
-                rankings[query_index] = _append_raw_candidates(
-                    current_candidates[order], raw_indices[query_index]
-                )
-                if used_window < maximum_window:
-                    reason = "shortened_window"
-                elif available < parameters.window_size:
-                    reason = "warmup_path"
-                else:
-                    reason = "full_window"
-        timings[query_index] = (
-            (time.perf_counter() - started) * 1000.0 + nms_timings[query_index]
-        )
-        diagnostics.append({
-            "query_index": query_index,
-            "raw_top1": int(raw_indices[query_index, 0]),
-            "output_top1": int(rankings[query_index, 0]),
-            "window_used": used_window,
-            "reason": reason,
-            "motion_delta_m": float(motion_deltas[query_index]),
-        })
-    return rankings, diagnostics, timings
+                reason = "cluster_no_candidate_raw_top1"
+        timings[target] = (time.perf_counter() - started) * 1000.0
+        diagnostics.append({"query_index": target, "output_top1": int(output[target, 0]), "window_used": end - start, "reason": reason, "center_delay_frames": half})
+    return output, diagnostics, timings
 
 
 def _positive_indices(database, queries, distance: float, yaw: float | None):
@@ -408,9 +322,17 @@ def _positive_indices(database, queries, distance: float, yaw: float | None):
     return positives
 
 
-def ranking_metrics(rankings: np.ndarray, database, queries, distance: float, yaw: float | None):
+def ranking_metrics(
+    rankings: np.ndarray, database, queries, distance: float, yaw: float | None,
+    query_mask: np.ndarray | None = None,
+):
     positives = _positive_indices(database, queries, distance, yaw)
     valid = np.asarray([len(items) > 0 for items in positives], dtype=bool)
+    if query_mask is not None:
+        query_mask = np.asarray(query_mask, dtype=bool)
+        if query_mask.shape != valid.shape:
+            raise ValueError("Query mask shape does not match the evaluation queries")
+        valid &= query_mask
     recalls = {}
     success = {}
     for recall in RECALLS:
@@ -429,6 +351,25 @@ def ranking_metrics(rankings: np.ndarray, database, queries, distance: float, ya
     }
 
 
+def map_covered_center_mask(database, queries, sequence_starts, window_size: int = 9):
+    """Select centers whose full window has 10m+30deg database coverage."""
+    if window_size < 1 or window_size % 2 == 0:
+        raise ValueError("Map-covered protocol requires a positive odd window")
+    covered = np.asarray(
+        [len(items) > 0 for items in _positive_indices(database, queries, 10.0, 30.0)],
+        dtype=bool,
+    )
+    starts = np.flatnonzero(np.asarray(sequence_starts, dtype=bool)).tolist()
+    if not starts or starts[0] != 0:
+        raise ValueError("The first query must start a sequence")
+    eligible = np.zeros(len(queries), dtype=bool)
+    half = window_size // 2
+    for start, end in zip(starts, starts[1:] + [len(queries)]):
+        for center in range(start + half, end - half):
+            eligible[center] = bool(covered[center - half:center + half + 1].all())
+    return eligible, covered
+
+
 def evaluate_grid(rankings: np.ndarray, database, queries) -> dict:
     output = {}
     for distance, yaw in product(DISTANCES_M, YAWS_DEG):
@@ -442,10 +383,22 @@ def evaluate_grid(rankings: np.ndarray, database, queries) -> dict:
     return output
 
 
+def evaluate_grid_masked(rankings, database, queries, query_mask) -> dict:
+    output = {}
+    for distance, yaw in product(DISTANCES_M, YAWS_DEG):
+        yaw_text = "none" if yaw is None else str(int(yaw))
+        output[f"distance_{int(distance)}m_yaw_{yaw_text}deg"] = {
+            **ranking_metrics(rankings, database, queries, distance, yaw, query_mask),
+            "positive_radius_m": distance,
+            "positive_yaw_deg": yaw,
+        }
+    return output
+
+
 def _validate_cache_for_run(metadata: dict, config, checkpoint: Path, condition: str) -> None:
     expected = {
         "condition": condition,
-        "descriptor_dim": 512,
+        "descriptor_dim": int(config.vpr.descriptor_dim),
         "checkpoint_sha256": file_sha256(checkpoint),
         "manifest_sha256": file_sha256(config.data.robotcar_manifest),
     }
@@ -457,20 +410,12 @@ def _validate_cache_for_run(metadata: dict, config, checkpoint: Path, condition:
         raise ValueError(f"RobotCar temporal cache mismatch: {mismatches}")
 
 
-def _selection_sort_key(item: dict) -> tuple:
-    parameters = item["parameters"]
-    return (
-        -item["recall1"],
-        parameters["top_k"],
-        parameters["window_size"],
-        parameters["transition_radius_m"],
-        parameters["motion_weight"],
-    )
-
-
 def select_robotcar_temporal(
-    config, checkpoint: str | Path, output: str | Path, cache: str | Path
+    config, checkpoint: str | Path, output: str | Path, cache: str | Path,
+    method: str = "clustered-mgtr",
 ) -> Path:
+    if method != "clustered-mgtr":
+        raise ValueError("Only the clustered-mgtr temporal method is supported")
     checkpoint_path = Path(checkpoint).expanduser().resolve()
     cache_path = build_robotcar_temporal_cache(config, checkpoint_path, "val", cache)
     metadata, arrays = load_robotcar_temporal_cache(cache_path)
@@ -478,70 +423,51 @@ def select_robotcar_temporal(
     database, original_queries, _ = _condition_rows(config, "val")
     order, _, _ = ordered_motion_deltas(original_queries)
     queries = [original_queries[int(index)] for index in order]
+    positions, routes = _database_frame_positions(database)
+    covered_mask, raw_coverage = map_covered_center_mask(
+        database, queries, arrays["sequence_starts"], max(CLUSTERED_WINDOWS)
+    )
     trials = []
-    for window_size, top_k, radius, weight in product(
-        (3, 4), (5, 10, 20), (15.0, 30.0, 50.0), (0.5, 1.0)
-    ):
-        parameters = TemporalParameters(window_size, top_k, radius, weight)
-        rankings, diagnostics, timings = rerank_temporal(
-            arrays["raw_indices"], arrays["raw_scores"], arrays["database_xy"],
-            arrays["database_yaw"], arrays["motion_deltas"], arrays["sequence_starts"],
-            parameters,
+    for window in CLUSTERED_WINDOWS:
+        parameters = ClusteredTemporalParameters(window)
+        rankings, diagnostics, timings = rerank_clustered_temporal(
+            arrays["raw_indices"], arrays["raw_scores"], positions, routes,
+            arrays["sequence_starts"], parameters,
         )
-        primary = ranking_metrics(rankings, database, queries, 10.0, 30.0)
-        trials.append({
-            "parameters": asdict(parameters),
-            "recall1": primary["recalls"]["1"],
-            "fallback_queries": sum(
-                item["reason"] == "no_valid_transition_raw_top1" for item in diagnostics
-            ),
-            "rerank_p95_ms": float(np.percentile(timings, 95)),
-        })
-    trials.sort(key=_selection_sort_key)
+        metrics = ranking_metrics(rankings, database, queries, 10.0, 30.0, covered_mask)
+        trials.append({"parameters": asdict(parameters), "metrics": metrics,
+                       "recall1": metrics["recalls"]["1"],
+                       "recall5": metrics["recalls"]["5"], "recall10": metrics["recalls"]["10"],
+                       "fallback_queries": sum(x["reason"] == "cluster_no_candidate_raw_top1" for x in diagnostics),
+                       "rerank_p95_ms": float(np.percentile(timings, 95))})
+    trials.sort(key=lambda x: (-x["recall1"], -x["recall5"], -x["recall10"], x["parameters"]["window_size"]))
     single = ranking_metrics(arrays["raw_indices"], database, queries, 10.0, 30.0)
-    payload = {
-        "schema": "robotcar_temporal_selection_v1",
-        "selection_split": "val",
-        "selection_metric": "recall1_10m_30deg",
-        "selected_parameters": trials[0]["parameters"],
-        "selected_recall1": trials[0]["recall1"],
-        "single_frame_recall1": single["recalls"]["1"],
-        "checkpoint_sha256": metadata["checkpoint_sha256"],
-        "manifest_sha256": metadata["manifest_sha256"],
-        "val_query_protocol_fingerprint": metadata["query_protocol_fingerprint"],
-        "cache": str(cache_path.resolve()),
-        "trials": trials,
-    }
-    write_json(payload, output)
+    write_json({"schema": "robotcar_clustered_mgtr_selection_v1", "selection_split": "val",
+                "selection_metric": "10m+30deg_R1_R5_R10", "selected_parameters": trials[0]["parameters"],
+                "selected_metrics": trials[0]["metrics"], "single_frame_metrics": single,
+                "checkpoint_sha256": metadata["checkpoint_sha256"], "manifest_sha256": metadata["manifest_sha256"],
+                "val_query_protocol_fingerprint": metadata["query_protocol_fingerprint"],
+                "top100_used_for_fallback": True,
+                "coverage_protocol": {
+                    "positive_radius_m": 10.0, "positive_yaw_deg": 30.0,
+                    "common_window_size": max(CLUSTERED_WINDOWS),
+                    "covered_queries": int(raw_coverage.sum()),
+                    "eligible_centers": int(covered_mask.sum()),
+                    "total_queries": len(queries),
+                },
+                "trials": trials}, output)
     return Path(output)
 
 
-def _validate_selection(selection: dict, metadata: dict) -> TemporalParameters:
-    if selection.get("selection_split") != "val":
-        raise ValueError("MGTR parameters must be selected on RobotCar val")
-    for field in ("checkpoint_sha256", "manifest_sha256"):
-        if selection.get(field) != metadata.get(field):
-            raise ValueError(f"MGTR selection/cache mismatch for {field}")
-    parameters = TemporalParameters(**selection["selected_parameters"])
-    fixed = (
-        parameters.raw_top_k == RAW_TOP_K
-        and parameters.nms_radius_m == NMS_RADIUS_M
-        and parameters.nms_yaw_deg == NMS_YAW_DEG
-        and parameters.motion_sigma_m == MOTION_SIGMA_M
-    )
-    if not fixed:
-        raise ValueError("MGTR selection has incompatible fixed parameters")
-    return parameters
-
-
 def temporal_resource_summary(
-    parameters: TemporalParameters,
+    parameters: ClusteredTemporalParameters,
     database_count: int,
     checkpoint_mib: float,
     metadata: dict,
     benchmark: dict,
     timings: np.ndarray,
 ) -> dict:
+    descriptor_dim = int(metadata.get("descriptor_dim", 512))
     state_bytes = (
         parameters.window_size * parameters.top_k * (8 + 4)
         + max(0, parameters.window_size - 1) * 4
@@ -554,8 +480,9 @@ def temporal_resource_summary(
         "top100_search_ms_per_query": metadata.get("top100_search_ms_per_query"),
         "rerank_cpu_p50_ms": float(np.percentile(timings, 50)),
         "rerank_cpu_p95_ms": float(np.percentile(timings, 95)),
-        "database_descriptor_mib_fp32": database_count * 512 * 4 / 1024**2,
-        "database_descriptor_mib_fp16": database_count * 512 * 2 / 1024**2,
+        "descriptor_dim": descriptor_dim,
+        "database_descriptor_mib_fp32": database_count * descriptor_dim * 4 / 1024**2,
+        "database_descriptor_mib_fp16": database_count * descriptor_dim * 2 / 1024**2,
         "sliding_window_state_bytes": state_bytes,
         "startup_encodings_per_observed_frame": 1,
         "steady_state_new_encodings_per_localization": 1,
@@ -570,31 +497,57 @@ def evaluate_robotcar_temporal(
     output: str | Path,
     cache: str | Path,
     ablations_output: str | Path | None = None,
+    method: str = "clustered-mgtr",
 ) -> Path:
     if condition not in {"night", "day"}:
-        raise ValueError("Formal MGTR evaluation condition must be night or day")
+        raise ValueError("Formal TCR evaluation condition must be night or day")
+    if method != "clustered-mgtr":
+        raise ValueError("Only the clustered-mgtr temporal method is supported")
     checkpoint_path = Path(checkpoint).expanduser().resolve()
     cache_path = build_robotcar_temporal_cache(config, checkpoint_path, condition, cache)
     metadata, arrays = load_robotcar_temporal_cache(cache_path)
     _validate_cache_for_run(metadata, config, checkpoint_path, condition)
     selection = json.loads(Path(selection_path).read_text(encoding="utf-8"))
     selection_sha256 = file_sha256(selection_path)
-    parameters = _validate_selection(selection, metadata)
+    if selection.get("schema") != "robotcar_clustered_mgtr_selection_v1" or selection.get("selection_split") != "val":
+        raise ValueError("TCR parameters must be selected on RobotCar val")
+    if selection.get("checkpoint_sha256") != metadata.get("checkpoint_sha256") or selection.get("manifest_sha256") != metadata.get("manifest_sha256"):
+        raise ValueError("TCR selection/cache mismatch")
+    parameters = ClusteredTemporalParameters(**selection["selected_parameters"])
     database, original_queries, split = _condition_rows(config, condition)
     order, _, _ = ordered_motion_deltas(original_queries)
     queries = [original_queries[int(index)] for index in order]
 
-    full_rankings, diagnostics, timings = rerank_temporal(
-        arrays["raw_indices"], arrays["raw_scores"], arrays["database_xy"],
-        arrays["database_yaw"], arrays["motion_deltas"], arrays["sequence_starts"],
-        parameters,
+    selected = ClusteredTemporalParameters(**selection["selected_parameters"])
+    positions, routes = _database_frame_positions(database)
+    full_rankings, diagnostics, timings = rerank_clustered_temporal(
+        arrays["raw_indices"], arrays["raw_scores"], positions, routes,
+        arrays["sequence_starts"], selected,
     )
     single_grid = evaluate_grid(arrays["raw_indices"], database, queries)
     full_grid = evaluate_grid(full_rankings, database, queries)
+    covered_grid = None
+    coverage_protocol = None
+    covered_mask, raw_coverage = map_covered_center_mask(
+        database, queries, arrays["sequence_starts"], max(CLUSTERED_WINDOWS)
+    )
+    covered_grid = {
+        "single_frame": evaluate_grid_masked(
+            arrays["raw_indices"], database, queries, covered_mask
+        ),
+        "tcr": evaluate_grid_masked(full_rankings, database, queries, covered_mask),
+    }
+    coverage_protocol = {
+        "positive_radius_m": 10.0, "positive_yaw_deg": 30.0,
+        "common_window_size": max(CLUSTERED_WINDOWS),
+        "covered_queries": int(raw_coverage.sum()),
+        "eligible_centers": int(covered_mask.sum()),
+        "total_queries": len(queries),
+    }
     benchmark_path = Path(config.vpr.output_dir) / "benchmark.json"
     benchmark = json.loads(benchmark_path.read_text(encoding="utf-8")) if benchmark_path.is_file() else {}
     payload = {
-        "schema": "robotcar_temporal_evaluation_v1",
+        "schema": "robotcar_clustered_mgtr_evaluation_v1",
         "condition": condition,
         "split": split,
         "development_result": True,
@@ -606,8 +559,11 @@ def evaluate_robotcar_temporal(
         "selection_sha256": selection_sha256,
         "database": len(database),
         "queries": len(queries),
+        "descriptor_dim": int(config.vpr.descriptor_dim),
         "single_frame": {"grid": single_grid},
-        "mgtr": {"grid": full_grid, "decisions": diagnostics},
+        "tcr": {"grid": full_grid, "decisions": diagnostics, "method": method},
+        "map_covered_protocol": coverage_protocol,
+        "map_covered_grid": covered_grid,
         "resources": temporal_resource_summary(
             parameters,
             len(database),
@@ -619,31 +575,6 @@ def evaluate_robotcar_temporal(
     }
     write_json(payload, output)
 
-    if ablations_output:
-        fixed_deltas = arrays["motion_deltas"].copy()
-        fixed_deltas[~arrays["sequence_starts"]] = 5.0
-        fixed_rankings, _, _ = rerank_temporal(
-            arrays["raw_indices"], arrays["raw_scores"], arrays["database_xy"],
-            arrays["database_yaw"], fixed_deltas, arrays["sequence_starts"], parameters,
-        )
-        no_nms_rankings, _, _ = rerank_temporal(
-            arrays["raw_indices"], arrays["raw_scores"], arrays["database_xy"],
-            arrays["database_yaw"], arrays["motion_deltas"], arrays["sequence_starts"],
-            parameters, use_nms=False,
-        )
-        write_json({
-            "schema": "robotcar_temporal_ablations_v1",
-            "condition": condition,
-            "checkpoint_sha256": metadata["checkpoint_sha256"],
-            "manifest_sha256": metadata["manifest_sha256"],
-            "query_protocol_fingerprint": metadata["query_protocol_fingerprint"],
-            "selection_sha256": selection_sha256,
-            "parameters": asdict(parameters),
-            "single_frame": evaluate_grid(arrays["raw_indices"], database, queries),
-            "fixed_step_5m": evaluate_grid(fixed_rankings, database, queries),
-            "no_nms": evaluate_grid(no_nms_rankings, database, queries),
-            "full_mgtr": full_grid,
-        }, ablations_output)
     return Path(output)
 
 
@@ -653,6 +584,14 @@ def _reference_robotcar(summary_path: str | Path) -> tuple[dict, dict]:
     if not metrics:
         raise ValueError(f"Reference summary has no robotcar_project result: {summary_path}")
     return summary, metrics
+
+
+def _tcr_grid(payload: dict) -> dict:
+    """Read the current TCR field, with a one-way compatibility read for old files."""
+    result = payload.get("tcr") or payload.get("mgtr")
+    if not isinstance(result, dict) or "grid" not in result:
+        raise ValueError("Temporal evaluation does not contain a TCR ranking grid")
+    return result["grid"]
 
 
 def summarize_robotcar_temporal(
@@ -667,15 +606,15 @@ def summarize_robotcar_temporal(
     night = json.loads(Path(night_path).read_text(encoding="utf-8"))
     day = json.loads(Path(day_path).read_text(encoding="utf-8"))
     if night.get("condition") != "night" or day.get("condition") != "day":
-        raise ValueError("MGTR summary requires night and day evaluations")
+        raise ValueError("TCR summary requires night and day evaluations")
     for field in ("checkpoint_sha256", "manifest_sha256", "selection_sha256"):
         if night.get(field) != day.get(field):
-            raise ValueError(f"Night/day MGTR mismatch for {field}")
+            raise ValueError(f"Night/day TCR mismatch for {field}")
     primary = "distance_10m_yaw_30deg"
     single_night = night["single_frame"]["grid"][primary]["recalls"]["1"]
-    mgtr_night = night["mgtr"]["grid"][primary]["recalls"]["1"]
+    tcr_night = _tcr_grid(night)[primary]["recalls"]["1"]
     single_day = day["single_frame"]["grid"][primary]["recalls"]["1"]
-    mgtr_day = day["mgtr"]["grid"][primary]["recalls"]["1"]
+    tcr_day = _tcr_grid(day)[primary]["recalls"]["1"]
     reference_resources = {}
     if reference_resources_path is not None:
         benchmark = json.loads(Path(reference_resources_path).read_text(encoding="utf-8"))
@@ -718,8 +657,8 @@ def summarize_robotcar_temporal(
         }
     rerank_p95 = float(night["resources"]["rerank_cpu_p95_ms"])
     acceptance = {
-        "night_improves_single_frame": mgtr_night > single_night,
-        "day_drop_within_0_5pp": mgtr_day >= single_day - 0.005,
+        "night_improves_single_frame": tcr_night > single_night,
+        "day_drop_within_0_5pp": tcr_day >= single_day - 0.005,
         "rerank_cpu_p95_at_most_2ms": rerank_p95 <= 2.0,
     }
     acceptance["adopt_as_robotcar_method"] = all(acceptance.values())
@@ -730,25 +669,25 @@ def summarize_robotcar_temporal(
         "reference_resource_benchmark_sha256": (
             file_sha256(reference_resources_path) if reference_resources_path is not None else None
         ),
-        "mixvpr_512_cdnd": {
+        f"mixvpr_{int(night['resources'].get('descriptor_dim', night.get('descriptor_dim', 512)))}_cdnd": {
             "single_frame_recall1": single_night,
-            "mgtr_recall1": mgtr_night,
-            "delta": mgtr_night - single_night,
+            "tcr_recall1": tcr_night,
+            "delta": tcr_night - single_night,
             "day_single_frame_recall1": single_day,
-            "day_mgtr_recall1": mgtr_day,
+            "day_tcr_recall1": tcr_day,
             "resources": night["resources"],
         },
         "dinov2_single_frame_references": references,
         "claims": {
-            "reaches_salad_single_frame": mgtr_night >= references["salad"]["recall1"],
-            "exceeds_boq_single_frame": mgtr_night > references["boq"]["recall1"],
+            "reaches_salad_single_frame": tcr_night >= references["salad"]["recall1"],
+            "exceeds_boq_single_frame": tcr_night > references["boq"]["recall1"],
             "comparison_type": "lightweight_temporal_system_vs_single_frame_references",
             "not_a_same_reranker_comparison": True,
         },
         "acceptance": acceptance,
         "limitations": [
-            "Query GPS is reduced to incremental motion; MGTR is motion-assisted, not pure single-frame VPR.",
-            "DINOv2 references do not use MGTR, so this is a system-level comparison.",
+            "TCR uses ordered queries and finite future context; it is not pure single-frame VPR.",
+            "DINOv2 references do not use TCR, so this is a system-level comparison.",
             "RobotCar results are development results, not a sealed external test.",
         ],
     }
