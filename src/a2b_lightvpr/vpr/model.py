@@ -10,6 +10,8 @@ import torch.nn.functional as F
 from torch import nn
 from torchvision import models
 
+from .salad import SALADStudentModel
+
 
 class GeM(nn.Module):
     def __init__(self, p: float = 3.0, eps: float = 1e-6):
@@ -169,7 +171,44 @@ def build_descriptor_model(
     init_checkpoint: str = "",
     model_family: str = "custom",
     num_clusters: int = 64,
-) -> DescriptorModel:
+    backbone_name: str = "",
+    backbone_repo: str = "",
+    backbone_checkpoint: str = "",
+    backbone_trainable_blocks: int = 0,
+    aggregator_repo: str = "",
+) -> nn.Module:
+    if model_family == "dino_mix":
+        from .dino_mix import DINOMixStudent
+        if aggregator_name != "mixvpr" or descriptor_dim != 512 or (image_height, image_width) != (322, 322):
+            raise ValueError("DINO-Mix requires MixVPR, 512D and 322x322")
+        model = DINOMixStudent(backbone_repo, backbone_name, backbone_checkpoint, backbone_trainable_blocks)
+        if init_checkpoint:
+            _strict_load_state(model, init_checkpoint)
+        return model
+    if model_family == "salad":
+        if (image_height, image_width) != (322, 322):
+            raise ValueError("Compact SALAD requires 322x322 input")
+        if aggregator_name != "salad" or descriptor_dim != 544:
+            raise ValueError("Compact SALAD requires salad aggregation and 544 dimensions")
+        return SALADStudentModel(
+            backbone_repo,
+            backbone_name,
+            backbone_checkpoint,
+            backbone_trainable_blocks,
+        )
+    if model_family == "boq":
+        if (image_height, image_width) != (322, 322):
+            raise ValueError("BoQ CDND requires 322x322 input")
+        if aggregator_name != "boq" or descriptor_dim != 12288:
+            raise ValueError("BoQ CDND requires boq aggregation and 12,288 dimensions")
+        from .boq import BoQSmallModel
+        return BoQSmallModel(
+            backbone_repo,
+            backbone_name,
+            backbone_checkpoint,
+            backbone_trainable_blocks,
+            aggregator_repo,
+        )
     if model_family == "mixvpr":
         if (image_height, image_width) != (320, 320):
             raise ValueError("Official MixVPR requires 320x320 input")

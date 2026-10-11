@@ -53,6 +53,17 @@ def day_fake_classification_loss(
         "classification_day": day_loss,
         "classification_fake": fake_loss,
     }
+
+
+def day_classification_loss(
+    day: torch.Tensor,
+    labels: torch.Tensor,
+    classifier: MarginCosineClassifier,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    day_loss = F.cross_entropy(classifier(day, labels), labels)
+    return day_loss, {"classification_day": day_loss}
+
+
 def cross_domain_neighborhood_loss(
     teacher_anchors: torch.Tensor,
     teacher_candidates: torch.Tensor,
@@ -65,6 +76,7 @@ def cross_domain_neighborhood_loss(
     candidate_image_keys: torch.Tensor,
     *,
     relation_temperature: float = 0.07,
+    mask_self_matches: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
     """Distill SALAD day neighborhoods without confidence gating."""
     if teacher_anchors.shape[0] != fake_anchors.shape[0] or fake_anchors.shape != day_anchors.shape:
@@ -79,7 +91,15 @@ def cross_domain_neighborhood_loss(
     fake_anchor = F.normalize(fake_anchors.float(), dim=1)
     day_anchor = F.normalize(day_anchors.float(), dim=1)
     student_candidate = F.normalize(student_day_candidates.float(), dim=1)
-    valid_candidates = anchor_image_keys[:, None].ne(candidate_image_keys[None, :])
+    valid_candidates = (
+        anchor_image_keys[:, None].ne(candidate_image_keys[None, :])
+        if mask_self_matches
+        else torch.ones(
+            (anchor_image_keys.shape[0], candidate_image_keys.shape[0]),
+            dtype=torch.bool,
+            device=anchor_image_keys.device,
+        )
+    )
     same_place = anchor_labels[:, None].eq(candidate_labels[None, :]) & valid_candidates
     different_place = anchor_labels[:, None].ne(candidate_labels[None, :]) & valid_candidates
     valid_anchors = same_place.any(dim=1) & different_place.any(dim=1)

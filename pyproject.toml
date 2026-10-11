@@ -22,6 +22,12 @@ eval = [
   "timm>=0.9",
 ]
 test = ["pytest>=7.4"]
+paper = ["matplotlib>=3.8"]
+small-reference = [
+  "pandas>=2.0",
+  "pytorch-metric-learning>=2.3",
+  "scikit-learn>=1.3",
+]
 
 [project.scripts]
 a2b-lightvpr = "a2b_lightvpr.cli:main"

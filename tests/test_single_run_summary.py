@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from a2b_lightvpr.single_run_summary import REPORT_PROTOCOLS, summarize_cdnd_seed0
+from a2b_lightvpr.reporting.seed0_summary import REPORT_PROTOCOLS, summarize_cdnd_seed0
 
 
 def _suite(path, dimension, value, fingerprint_suffix=""):

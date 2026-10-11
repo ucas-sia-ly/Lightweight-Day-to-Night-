@@ -1,0 +1,67 @@
+data:
+  robotcar_manifest: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/manifest.csv
+  robotcar_protocol: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/protocol.json
+  generator_manifest: data/manifests_clean_night/generator_train.csv
+  vpr_source_manifest: data/manifests_clean_night/vpr_train.csv
+  generated_root: data/generated/multidataset_qsattn_official_150k
+  tokyo_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/tokyo247
+  svox_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/svox
+  msls_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/MSLS
+vpr:
+  output_dir: runs/vpr/dino_mix_small_512/day_fake_seed0
+  model_family: dino_mix
+  aggregator: mixvpr
+  descriptor_dim: 512
+  image_height: 322
+  image_width: 322
+  loss_profile: v2
+  random_seed: 0
+  train_domains: day_fake
+  cross_domain_aux: none
+  relation_teacher: none
+  relation_teacher_repo: ''
+  relation_teacher_checkpoint: ''
+  relation_teacher_cache: ''
+  relation_teacher_input_size: 322
+  relation_queue_size: 2048
+  relation_temperature: 0.07
+  relation_weight: 0.5
+  relation_day_weight: 0.5
+  relation_mask_self: true
+  relation_queue_scope: dataset
+  epochs: 20
+  batch_size: 8
+  gradient_accumulation_steps: 2
+  workers: 4
+  encoder_lr: 1.0e-05
+  aggregator_lr: 0.0001
+  classifier_lr: 0.0001
+  classifier_warmup_lr: 0.001
+  classifier_warmup_epochs: 0
+  freeze_batch_norm: true
+  evaluate_epoch_zero: false
+  early_stopping: false
+  epoch_one_max_recall_drop: 0.0
+  init_checkpoint: ''
+  datasets:
+  - msls
+  - robotcar
+  - svox
+  min_class_images_by_dataset:
+    msls: 4
+    robotcar: 2
+    svox: 2
+  sampler: pk_balanced
+  pk_places_per_batch: 4
+  pk_images_per_place: 2
+  dataset_epoch_quotas:
+    msls: 20000
+    robotcar: 20000
+    svox: 20000
+  samples_per_epoch: 60000
+  scheduler: cosine
+  scheduler_min_lr_ratio: 0.01
+  backbone_name: dinov2_vits14
+  backbone_repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+  backbone_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/salad/dinov2_vits14_pretrain.pth
+  backbone_trainable_blocks: 2

@@ -20,6 +20,33 @@ def test_public_config_rejects_seed_fields(key):
         apply_overrides(base_config(), [key])
 
 
+def test_vpr_random_seed_and_ablation_controls_are_public():
+    config = apply_overrides(base_config(), [
+        "vpr.random_seed=2",
+        "vpr.train_domains=day",
+        "vpr.relation_mask_self=false",
+        "vpr.relation_queue_scope=shared",
+    ])
+    assert config.vpr.random_seed == 2
+    assert config.vpr.train_domains == "day"
+    assert not config.vpr.relation_mask_self
+    assert config.vpr.relation_queue_scope == "shared"
+
+
+@pytest.mark.parametrize(
+    ("key", "message"),
+    [
+        ("vpr.random_seed=-1", "non-negative"),
+        ("vpr.train_domains=night", "day or day_fake"),
+        ("vpr.relation_queue_scope=global", "dataset or shared"),
+        ("vpr.relation_mask_self=1", "must be a boolean"),
+    ],
+)
+def test_vpr_experiment_controls_reject_invalid_values(key, message):
+    with pytest.raises(ValueError, match=message):
+        apply_overrides(base_config(), [key])
+
+
 def test_resume_paths_do_not_change_experiment_fingerprint():
     config = base_config()
     changed = replace(
@@ -32,8 +59,8 @@ def test_resume_paths_do_not_change_experiment_fingerprint():
 
 @pytest.mark.parametrize("dimension", [128, 512, 4096])
 def test_formal_dimension_configs_are_strictly_paired(dimension):
-    baseline = load_config(f"configs/vpr_day_fake_pk_{dimension}.yaml")
-    candidate = load_config(f"configs/vpr_cdnd_salad_{dimension}.yaml")
+    baseline = load_config(f"configs/vpr/day_fake_{dimension}.yaml")
+    candidate = load_config(f"configs/vpr/cdnd_salad_{dimension}.yaml")
     assert baseline.data == candidate.data
     assert baseline.vpr.descriptor_dim == candidate.vpr.descriptor_dim == dimension
     assert baseline.vpr.cross_domain_aux == "none"
@@ -61,19 +88,50 @@ def test_formal_dimension_configs_are_strictly_paired(dimension):
     assert baseline.vpr.epochs == 20
 
 
-def test_only_salad_can_be_the_training_teacher():
+def test_relation_teacher_requires_relation_training():
     config = base_config()
-    with pytest.raises(ValueError, match="none or salad"):
+    with pytest.raises(ValueError, match="Only cross_domain_relation"):
         validate_config(replace(config, vpr=replace(config.vpr, relation_teacher="boq")))
 
 
 def test_reference_config_still_loads():
-    assert load_config("configs/reference_models_extended.yaml")
+    assert load_config("configs/references/official.yaml")
 
 
 def test_official_generator_config_has_no_public_seed():
-    config = load_config("configs/generator_qsattn_official_objective_150k.yaml")
+    config = load_config("configs/generator/qsattn_official_objective_150k.yaml")
     assert config.generator.objective == "qsattn"
     assert config.generator.max_steps == 150_000
     assert config.generator.qs_nce_identity
     assert not hasattr(config.generator, "seed")
+
+
+def test_robotcar_only_ablation_configs_share_budget_and_initialization():
+    from a2b_lightvpr.config import load_config
+    configs = [load_config(f'configs/experiments/single_dataset/robotcar_only_{name}.yaml') for name in ('day_only','day_fake','cdnd')]
+    for c in configs:
+        assert c.vpr.datasets == ('robotcar',)
+        assert c.vpr.dataset_epoch_quotas == {'robotcar': 8944}
+        assert c.vpr.samples_per_epoch % c.vpr.batch_size == 0
+        assert c.vpr.epochs == 20 and c.generator.max_steps == 30000
+        assert not c.vpr.early_stopping and c.vpr.epoch_one_max_recall_drop == 0
+    assert len({c.vpr.init_checkpoint for c in configs}) == 1
+    assert len({c.data.generated_root for c in configs}) == 1
+    assert [c.vpr.relation_teacher for c in configs] == ['none','none','salad']
+    assert [c.vpr.train_domains for c in configs] == ['day','day_fake','day_fake']
+
+
+def test_svox_msls_only_configs_use_fixed_budget_without_robotcar_validation():
+    from a2b_lightvpr.config import load_config, validate_config
+    from dataclasses import replace
+    import pytest
+    for ds, quota in [('svox',33520),('msls',75840)]:
+        for group in ('day_only','day_fake','cdnd'):
+            c=load_config(f'configs/experiments/single_dataset/{ds}_only_{group}.yaml')
+            assert c.vpr.datasets==(ds,)
+            assert c.vpr.selection_rule=='fixed_budget_last'
+            assert c.vpr.samples_per_epoch==quota
+            assert not c.vpr.evaluate_epoch_zero
+            assert c.vpr.relation_teacher==('salad' if group=='cdnd' else 'none')
+            with pytest.raises(ValueError,match='Fixed-budget'):
+                validate_config(replace(c,vpr=replace(c.vpr,early_stopping=True)))

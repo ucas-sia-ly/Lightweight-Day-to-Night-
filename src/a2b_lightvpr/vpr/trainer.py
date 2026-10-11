@@ -33,6 +33,7 @@ from ..transforms import VPRTransform
 from .losses import (
     MarginCosineClassifier,
     cross_domain_neighborhood_loss,
+    day_classification_loss,
     day_fake_classification_loss,
 )
 from .model import build_descriptor_model, resolve_initial_checkpoint
@@ -40,12 +41,12 @@ from .neighborhood import DatasetNeighborhoodQueue
 from .teacher_cache import TeacherDescriptorCache
 
 
-def _set_fixed_random_state() -> None:
-    random.seed(0)
-    np.random.seed(0)
-    torch.manual_seed(0)
+def _set_random_state(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(0)
+        torch.cuda.manual_seed_all(seed)
 
 
 def optimizer_base_lrs(cfg) -> list[float]:
@@ -103,8 +104,11 @@ def freeze_batch_norm_statistics(model: nn.Module) -> None:
 def configure_training_phase(model, optimizer, cfg, epoch: int) -> bool:
     warmup = epoch < cfg.classifier_warmup_epochs
     official_model = cfg.model_family != "custom"
-    for parameter in model.backbone.parameters():
-        parameter.requires_grad_(not warmup)
+    if hasattr(model, "set_backbone_trainable"):
+        model.set_backbone_trainable(not warmup)
+    else:
+        for parameter in model.backbone.parameters():
+            parameter.requires_grad_(not warmup)
     for parameter in model.aggregator.parameters():
         parameter.requires_grad_(not warmup or not official_model)
     if warmup:
@@ -142,8 +146,10 @@ def _inference_checkpoint(
         "epoch": int(epoch),
         "val_recall1": float(score),
         "epoch_zero_recall1": float(epoch_zero_score),
+        "selection_rule": config.vpr.selection_rule,
         "config_fingerprint": config.fingerprint(),
         "descriptor_dim": int(config.vpr.descriptor_dim),
+        "random_seed": int(config.vpr.random_seed),
         "data_fingerprints": data_fingerprints(config, generated=generated_manifest),
         "model": model.state_dict(),
     }
@@ -173,6 +179,7 @@ def _vpr_checkpoint(
         "epoch": int(epoch),
         "best_val_recall1": float(best_score),
         "epoch_zero_recall1": float(epoch_zero_score),
+        "selection_rule": config.vpr.selection_rule,
         "stale_epochs": int(stale_epochs),
         "optimizer_step": int(optimizer_step),
         "samples_seen": int(samples_seen),
@@ -180,6 +187,7 @@ def _vpr_checkpoint(
         "config_fingerprint": config.fingerprint(),
         "config": config.as_dict(),
         "descriptor_dim": int(config.vpr.descriptor_dim),
+        "random_seed": int(config.vpr.random_seed),
         "data_fingerprints": data_fingerprints(config, generated=generated_manifest),
         "model": model.state_dict(),
         "classifier": classifier.state_dict(),
@@ -230,6 +238,7 @@ def export_vpr_inference_checkpoint(
         "epoch_zero_recall1": float(state.get("epoch_zero_recall1", -1.0)),
         "config_fingerprint": state["config_fingerprint"],
         "descriptor_dim": int(config.vpr.descriptor_dim),
+        "random_seed": int(config.vpr.random_seed),
         "data_fingerprints": state.get("data_fingerprints", {}),
         "model": state["model"],
     }
@@ -239,7 +248,7 @@ def export_vpr_inference_checkpoint(
 
 def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> Path:
     cfg = config.vpr
-    _set_fixed_random_state()
+    _set_random_state(cfg.random_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -249,7 +258,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
     teacher_cache = (
         TeacherDescriptorCache(config, generated_manifest)
         if cfg.cross_domain_aux == "cross_domain_relation"
-        and cfg.relation_teacher == "salad"
+        and cfg.relation_teacher in {"salad", "boq"}
         else None
     )
     dataset = PairedVPRDataset(
@@ -260,6 +269,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         dataset_sampling_weights=cfg.dataset_sampling_weights,
         datasets=cfg.datasets,
         teacher_cache=teacher_cache,
+        include_fake=cfg.train_domains == "day_fake",
     )
     if cfg.sampler == "pk_balanced":
         sampler = PKBalancedBatchSampler(
@@ -267,15 +277,20 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             cfg.dataset_epoch_quotas,
             cfg.pk_places_per_batch,
             cfg.pk_images_per_place,
+            cfg.random_seed,
         )
     elif cfg.sampler == "rolling_balanced":
-        sampler = RollingBalancedSampler(dataset.rows, cfg.dataset_epoch_quotas)
+        sampler = RollingBalancedSampler(
+            dataset.rows, cfg.dataset_epoch_quotas, cfg.random_seed
+        )
     elif cfg.sampler == "coverage_balanced":
-        sampler = CoverageBalancedSampler(dataset.rows, cfg.dataset_epoch_quotas)
+        sampler = CoverageBalancedSampler(
+            dataset.rows, cfg.dataset_epoch_quotas, cfg.random_seed
+        )
     else:
         sampler = WeightedRandomSampler(
             dataset.balanced_weights(), cfg.samples_per_epoch, replacement=True,
-            generator=torch.Generator().manual_seed(0),
+            generator=torch.Generator().manual_seed(cfg.random_seed),
         )
 
     initial_checkpoint = resolve_initial_checkpoint(cfg.init_checkpoint, cfg.descriptor_dim)
@@ -288,6 +303,11 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         init_checkpoint=initial_checkpoint,
         model_family=cfg.model_family,
         num_clusters=cfg.num_clusters,
+        backbone_name=cfg.backbone_name,
+        backbone_repo=cfg.backbone_repo,
+        backbone_checkpoint=cfg.backbone_checkpoint,
+        backbone_trainable_blocks=cfg.backbone_trainable_blocks,
+        aggregator_repo=cfg.aggregator_repo,
     ).to(device)
     classifier_device = torch.device("cpu") if cfg.classifier_cpu_offload else device
     classifier = MarginCosineClassifier(
@@ -298,6 +318,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
     loader_kwargs = {
         "num_workers": cfg.workers,
         "pin_memory": device.type == "cuda",
+        "generator": torch.Generator().manual_seed(cfg.random_seed),
     }
     if cfg.sampler == "pk_balanced":
         loader_kwargs["batch_sampler"] = sampler
@@ -313,8 +334,9 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
     scheduler = build_vpr_scheduler(optimizer, cfg, steps_per_epoch)
     use_amp = bool(cfg.amp and device.type == "cuda")
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    queue_partitions = cfg.datasets if cfg.relation_queue_scope == "dataset" else ("shared",)
     relation_queue = (
-        DatasetNeighborhoodQueue(cfg.datasets, cfg.relation_queue_size, device)
+        DatasetNeighborhoodQueue(queue_partitions, cfg.relation_queue_size, device)
         if cfg.cross_domain_aux == "cross_domain_relation"
         else None
     )
@@ -402,7 +424,11 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             data_time += batch_ready - data_wait_start
             step_start = batch_ready
             day = batch["day"].to(device, non_blocking=True)
-            fake = batch["fake"].to(device, non_blocking=True)
+            fake = (
+                batch["fake"].to(device, non_blocking=True)
+                if cfg.train_domains == "day_fake"
+                else None
+            )
             labels = batch["label"].to(device, non_blocking=True)
             image_keys = batch["image_key"].to(device, non_blocking=True)
             batch_datasets = set(batch["dataset"])
@@ -410,20 +436,28 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             if cfg.cross_domain_aux == "cross_domain_relation" and len(batch_datasets) != 1:
                 raise RuntimeError("CDND requires every mini-batch to contain one dataset")
             with torch.autocast(device.type, enabled=use_amp):
-                fake_descriptor = model.encode(fake)
                 day_descriptor = model.encode(day)
+                fake_descriptor = model.encode(fake) if fake is not None else None
                 if "teacher_descriptor" in batch:
                     teacher_day = batch["teacher_descriptor"].to(device, non_blocking=True)
                 else:
                     teacher_day = None
-                loss, components = day_fake_classification_loss(
-                    day_descriptor, fake_descriptor, labels, classifier
-                )
+                if fake_descriptor is None:
+                    loss, components = day_classification_loss(
+                        day_descriptor, labels, classifier
+                    )
+                else:
+                    loss, components = day_fake_classification_loss(
+                        day_descriptor, fake_descriptor, labels, classifier
+                    )
                 if cfg.cross_domain_aux == "cross_domain_relation":
                     if teacher_day is None or day_descriptor is None or fake_descriptor is None:
                         raise RuntimeError("CDND requires teacher, day, and fake descriptors")
+                    queue_partition = (
+                        dataset_name if cfg.relation_queue_scope == "dataset" else "shared"
+                    )
                     candidates = relation_queue.candidates(
-                        dataset_name,
+                        queue_partition,
                         teacher_day,
                         day_descriptor,
                         labels,
@@ -442,6 +476,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
                                 image_keys,
                                 candidates.image_keys,
                                 relation_temperature=cfg.relation_temperature,
+                                mask_self_matches=cfg.relation_mask_self,
                             )
                         )
                     relation = fake_relation + cfg.relation_day_weight * day_relation
@@ -458,7 +493,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             scaler.scale(loss / loss_divisor).backward()
             if relation_queue is not None:
                 relation_queue.enqueue(
-                    dataset_name, teacher_day, day_descriptor, labels, image_keys
+                    queue_partition, teacher_day, day_descriptor, labels, image_keys
                 )
             update_due = (
                 (batch_index + 1) % cfg.gradient_accumulation_steps == 0
@@ -480,7 +515,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             batch_samples = int(day.shape[0])
             epoch_samples += batch_samples
             samples_seen += batch_samples
-            encoded_student_images += batch_samples * 2
+            encoded_student_images += batch_samples * (2 if fake is not None else 1)
             running += float(loss.item())
             step_time += time.perf_counter() - step_start
             elapsed = max(time.perf_counter() - epoch_start, 1e-9)
@@ -491,18 +526,21 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             data_wait_start = time.perf_counter()
 
         model.eval()
-        metrics = _evaluate_validation(
-            model, config, transform, device,
-            output_dir / "validation" / "latest.json",
-        )
-        score = float(metrics["recalls"]["1"])
+        if cfg.selection_rule == "fixed_budget_last":
+            score = -1.0  # Not measured; never report this sentinel as recall.
+        else:
+            metrics = _evaluate_validation(
+                model, config, transform, device,
+                output_dir / "validation" / "latest.json",
+            )
+            score = float(metrics["recalls"]["1"])
         previous_lrs = [float(group["lr"]) for group in optimizer.param_groups]
         if scheduler is not None and cfg.scheduler == "plateau":
             scheduler.step(score)
         current_lrs = [float(group["lr"]) for group in optimizer.param_groups]
         lr_reduced = any(after < before for before, after in zip(previous_lrs, current_lrs))
         previous_best = best_score
-        improved = score > previous_best
+        improved = cfg.selection_rule == "fixed_budget_last" or score > previous_best
         significant_improvement = score > previous_best + cfg.scheduler_threshold
         if improved:
             best_score = score

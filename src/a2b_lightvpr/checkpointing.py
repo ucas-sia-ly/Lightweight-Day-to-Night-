@@ -26,6 +26,14 @@ def checkpoint_config_matches(state: dict, config, sections: tuple[str, ...] | N
     for values in (saved, current):
         values.get("generator", {}).update(resume="", output_dir="")
         values.get("vpr", {}).update(resume="", output_dir="")
+    saved_vpr = saved.get("vpr", {})
+    saved_vpr.setdefault("random_seed", int(saved_vpr.get("seed", 0)))
+    saved_vpr.setdefault("relation_mask_self", True)
+    saved_vpr.setdefault("relation_queue_scope", "dataset")
+    saved_vpr.setdefault("backbone_name", "")
+    saved_vpr.setdefault("backbone_repo", "")
+    saved_vpr.setdefault("backbone_checkpoint", "")
+    saved_vpr.setdefault("backbone_trainable_blocks", 0)
     def active_fields(candidate, reference):
         if isinstance(reference, dict):
             return {
@@ -58,7 +66,18 @@ def data_fingerprints(config, *, generated: str | Path | None = None) -> dict[st
     }
     if generated is not None:
         paths["generated_manifest"] = generated
-    return {name: file_sha256(path) for name, path in paths.items()}
+    # VPR checkpoints do not consume the generator training manifest.  Some
+    # deployments intentionally omit that optional asset (for example when
+    # training from an already-generated day+fake set), so do not make
+    # checkpoint creation fail merely because the unused default path is
+    # absent.  Manifests that are present are still fingerprinted normally;
+    # required VPR manifests retain the same strict behaviour below.
+    fingerprints = {}
+    for name, path in paths.items():
+        if name == "generator_manifest" and not Path(path).is_file():
+            continue
+        fingerprints[name] = file_sha256(path)
+    return fingerprints
 
 
 def rng_state() -> dict:

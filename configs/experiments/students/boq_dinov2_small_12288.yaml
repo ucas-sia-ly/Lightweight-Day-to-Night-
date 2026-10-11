@@ -1,0 +1,28 @@
+boq_small:
+  output_dir: runs/reference/boq-dinov2-s-12288-distilled
+  gsv_cities_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/gsv-cities
+  dinov2_repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+  boq_repo: /home/admin123/diffusion_vpr_test/reference_code/Bag-of-Queries
+  teacher_repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+  teacher_backbone_name: dinov2_vitb14
+  teacher_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_12288.pth
+  distillation_loss: scaled_mse
+  distillation_weight: 1.0
+  backbone_name: dinov2_vits14_reg
+  backbone_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth
+  trainable_blocks: 2
+  descriptor_dim: 12288
+  train_image_size: 224
+  evaluation_image_size: 322
+  places_per_batch: 8
+  images_per_place: 4
+  gradient_accumulation_steps: 16
+  effective_places_per_batch: 128
+  epochs: 40
+  warmup_epochs: 10
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  milestones: [10, 20]
+  lr_multiplier: 0.1
+  workers: 4
+  random_seed: 0

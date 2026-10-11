@@ -11,7 +11,7 @@ import torch
 
 from .checkpointing import file_sha256, write_json
 from .evaluation import extract_descriptors
-from .reference_models import query_protocol_fingerprint, suite_rows
+from .references.models import query_protocol_fingerprint, suite_rows
 from .runtime import load_vpr_model
 from .transforms import VPRTransform
 

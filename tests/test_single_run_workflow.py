@@ -4,10 +4,10 @@ from a2b_lightvpr.cli import _parser
 
 
 def test_clustered_workflow_contract():
-    script = Path("scripts/run_robotcar_temporal_512.fish").read_text(encoding="utf-8")
+    script = Path("scripts/evaluate/run_robotcar_temporal_512.fish").read_text(encoding="utf-8")
     assert "select-robotcar-temporal" in script
     assert "--condition night" in script
-    assert "configs/vpr_cdnd_salad_512.yaml" in script
+    assert "configs/vpr/cdnd_salad_512.yaml" in script
     assert "cdnd_512/salad_no_gate_seed0/model_best.pt" in script
     assert "--dimension" not in script
     assert '--night "$night"' in script

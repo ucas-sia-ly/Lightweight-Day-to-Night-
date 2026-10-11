@@ -57,6 +57,7 @@ class VPRConfig:
     image_height: int = 256
     image_width: int = 384
     loss_profile: str = "v2"
+    random_seed: int = 0
     epochs: int = 5
     batch_size: int = 16
     gradient_accumulation_steps: int = 1
@@ -68,6 +69,7 @@ class VPRConfig:
     classifier_warmup_lr: float = 1e-3
     classifier_warmup_epochs: int = 0
     freeze_batch_norm: bool = False
+    selection_rule: str = "validation_best"
     evaluate_epoch_zero: bool = False
     early_stopping: bool = True
     epoch_one_max_recall_drop: float = 0.0
@@ -76,6 +78,11 @@ class VPRConfig:
     amp: bool = True
     patience: int = 4
     init_checkpoint: str = ""
+    backbone_name: str = ""
+    backbone_repo: str = ""
+    backbone_checkpoint: str = ""
+    backbone_trainable_blocks: int = 0
+    aggregator_repo: str = ""
     resume: str = ""
     min_class_images: int = 4
     min_class_images_by_dataset: dict[str, int] = field(default_factory=dict)
@@ -100,6 +107,8 @@ class VPRConfig:
     relation_queue_size: int = 2048
     relation_temperature: float = 0.07
     relation_day_weight: float = 0.5
+    relation_mask_self: bool = True
+    relation_queue_scope: str = "dataset"
     pk_places_per_batch: int = 4
     pk_images_per_place: int = 2
 
@@ -192,36 +201,68 @@ def validate_config(config: ExperimentConfig) -> None:
         raise ValueError("The active official QS-Attn objective requires qs_mode=global")
     if config.generator.qs_netf != "mlp_sample":
         raise ValueError("The active official QS-Attn objective requires qs_netf=mlp_sample")
-    if config.vpr.model_family not in {"custom", "cosplace", "eigenplaces", "mixvpr", "netvlad"}:
-        raise ValueError("vpr.model_family must be custom, cosplace, eigenplaces, mixvpr, or netvlad")
-    if config.vpr.aggregator not in {"gem", "convap", "mixvpr", "netvlad"}:
-        raise ValueError("vpr.aggregator must be gem, convap, mixvpr, or netvlad")
+    if config.vpr.model_family not in {
+        "custom", "cosplace", "eigenplaces", "mixvpr", "netvlad", "salad", "boq", "dino_mix"
+    }:
+        raise ValueError(
+            "vpr.model_family must be custom, cosplace, eigenplaces, mixvpr, "
+            "netvlad, salad, or boq"
+        )
+    if config.vpr.aggregator not in {"gem", "convap", "mixvpr", "netvlad", "salad", "boq"}:
+        raise ValueError("vpr.aggregator must be gem, convap, mixvpr, netvlad, salad, or boq")
     if config.vpr.loss_profile != "v2":
         raise ValueError("The single-run VPR workflow requires loss_profile=v2")
     if config.vpr.scheduler not in {"constant", "cosine", "plateau"}:
         raise ValueError("vpr.scheduler must be constant, cosine, or plateau")
-    if config.vpr.relation_teacher not in {"none", "salad"}:
-        raise ValueError("vpr.relation_teacher must be none or salad")
+    if config.vpr.relation_teacher not in {"none", "salad", "boq"}:
+        raise ValueError("vpr.relation_teacher must be none, salad, or boq")
     cross_domain_relation = config.vpr.cross_domain_aux == "cross_domain_relation"
     if not cross_domain_relation and config.vpr.relation_teacher != "none":
         raise ValueError("Only cross_domain_relation may configure a relation teacher")
-    if cross_domain_relation and config.vpr.relation_teacher != "salad":
-        raise ValueError("cross_domain_relation requires the offline SALAD teacher")
-    if config.vpr.relation_teacher == "salad":
+    if cross_domain_relation and config.vpr.relation_teacher not in {"salad", "boq"}:
+        raise ValueError("cross_domain_relation requires an offline SALAD or BoQ teacher")
+    if config.vpr.relation_teacher in {"salad", "boq"}:
         if not config.vpr.relation_teacher_checkpoint:
             raise ValueError("Strong relation teachers require relation_teacher_checkpoint")
         if not config.vpr.relation_teacher_repo:
             raise ValueError("Strong relation teachers require a local relation_teacher_repo")
         if not config.vpr.relation_teacher_cache:
             raise ValueError("Strong relation teachers require relation_teacher_cache")
-    if config.vpr.descriptor_dim not in {128, 512, 2048, 4096}:
-        raise ValueError("vpr.descriptor_dim must be 128, 512, 2048, or 4096")
+    if config.vpr.descriptor_dim not in {128, 512, 544, 2048, 4096, 12288}:
+        raise ValueError("vpr.descriptor_dim must be 128, 512, 544, 2048, 4096, or 12288")
+    if config.vpr.model_family == "dino_mix":
+        if config.vpr.backbone_name != "dinov2_vits14" or config.vpr.aggregator != "mixvpr" or config.vpr.descriptor_dim != 512:
+            raise ValueError("DINO-Mix requires plain DINOv2-S, MixVPR and 512D")
+        if (config.vpr.image_height, config.vpr.image_width) != (322, 322):
+            raise ValueError("DINO-Mix input must be 322x322")
+        if not config.vpr.backbone_repo or not config.vpr.backbone_checkpoint or not 1 <= config.vpr.backbone_trainable_blocks <= 12:
+            raise ValueError("DINO-Mix needs local backbone and 1-12 trainable blocks")
+    if config.vpr.model_family == "boq":
+        if config.vpr.aggregator != "boq" or config.vpr.descriptor_dim != 12288:
+            raise ValueError("BoQ CDND requires boq aggregation and 12,288 dimensions")
+        if config.vpr.train_domains != "day_fake":
+            raise ValueError("BoQ CDND requires paired day+fake training")
+        if not config.vpr.backbone_name or not config.vpr.backbone_repo or not config.vpr.backbone_checkpoint:
+            raise ValueError("BoQ CDND requires a DINOv2-S backbone configuration")
+        if not config.vpr.aggregator_repo:
+            raise ValueError("BoQ CDND requires the local BoQ aggregator repository")
+        if config.vpr.cross_domain_aux == "cross_domain_relation" and config.vpr.relation_teacher != "boq":
+            raise ValueError("BoQ CDND requires a BoQ teacher")
     if config.vpr.model_family in {"custom", "cosplace"} and config.vpr.descriptor_dim != 512:
         raise ValueError("Custom and CosPlace candidates use 512-dimensional descriptors")
     if config.vpr.model_family == "eigenplaces" and config.vpr.descriptor_dim not in {512, 2048}:
         raise ValueError("EigenPlaces adaptation supports descriptor_dim 512 or 2048")
     if config.vpr.model_family == "mixvpr" and config.vpr.descriptor_dim not in {128, 512, 4096}:
         raise ValueError("MixVPR adaptation supports descriptor_dim 128, 512, or 4096")
+    if config.vpr.model_family == "salad":
+        if config.vpr.aggregator != "salad" or config.vpr.descriptor_dim != 544:
+            raise ValueError("Compact SALAD requires salad aggregation and 544 dimensions")
+        if config.vpr.backbone_name != "dinov2_vits14_reg":
+            raise ValueError("Compact SALAD student requires dinov2_vits14_reg")
+        if not config.vpr.backbone_repo or not config.vpr.backbone_checkpoint:
+            raise ValueError("Compact SALAD requires backbone_repo and backbone_checkpoint")
+        if not 0 < config.vpr.backbone_trainable_blocks <= 12:
+            raise ValueError("Compact SALAD requires 1--12 trainable backbone blocks")
     if config.vpr.model_family == "netvlad":
         if config.vpr.aggregator != "netvlad" or config.vpr.descriptor_dim != 4096:
             raise ValueError("NetVLAD adaptation requires netvlad aggregation and 4096 dimensions")
@@ -231,6 +272,8 @@ def validate_config(config: ExperimentConfig) -> None:
         (256, 384),
         (320, 480),
         (320, 320),
+        (322, 322),
+        (322, 322),
     }:
         raise ValueError("VPR resolution must be 256x384, 320x480, or 320x320")
     if any(weight <= 0 for weight in config.data.dataset_weights.values()):
@@ -266,10 +309,19 @@ def validate_config(config: ExperimentConfig) -> None:
             raise ValueError("PK sampler requires batch_size == pk_places_per_batch * pk_images_per_place")
         if any(value % pk_batch for value in config.vpr.dataset_epoch_quotas.values()):
             raise ValueError("Every PK dataset quota must be divisible by the physical batch size")
+    if config.vpr.selection_rule not in {"validation_best", "fixed_budget_last"}:
+        raise ValueError("Unknown VPR selection_rule")
+    if config.vpr.selection_rule == "fixed_budget_last" and (
+        config.vpr.evaluate_epoch_zero or config.vpr.early_stopping
+        or config.vpr.scheduler == "plateau" or config.vpr.epoch_one_max_recall_drop > 0
+    ):
+        raise ValueError("Fixed-budget selection must disable validation-based controls")
     expected_datasets = {"msls", "robotcar", "svox"}
+    if set(config.vpr.datasets) in ({"gsv_cities"}, {"robotcar"}, {"svox"}, {"msls"}):
+        expected_datasets = set(config.vpr.datasets)
     if set(config.vpr.datasets) != expected_datasets:
         raise ValueError(
-            "Formal VPR training must use exactly msls, robotcar, and svox"
+            "Formal VPR training must use msls/robotcar/svox, gsv_cities alone, or robotcar alone"
         )
     if config.vpr.dataset_epoch_quotas and set(config.vpr.dataset_epoch_quotas) != expected_datasets:
         raise ValueError("VPR epoch quotas must match the active training datasets")
@@ -277,8 +329,21 @@ def validate_config(config: ExperimentConfig) -> None:
         config.vpr.image_height, config.vpr.image_width
     ) != (320, 320):
         raise ValueError("Official MixVPR adaptation requires 320x320 input")
-    if config.vpr.train_domains != "day_fake":
-        raise ValueError("The single-run VPR workflow requires train_domains=day_fake")
+    if config.vpr.model_family == "salad":
+        if (config.vpr.image_height, config.vpr.image_width) != (322, 322):
+            raise ValueError("Compact SALAD requires 322x322 input")
+        if config.vpr.backbone_name != "dinov2_vits14_reg":
+            raise ValueError("Compact SALAD requires dinov2_vits14_reg")
+        if not config.vpr.backbone_repo or not config.vpr.backbone_checkpoint:
+            raise ValueError("Compact SALAD requires a backbone repo and checkpoint")
+        if not 0 <= config.vpr.backbone_trainable_blocks <= 12:
+            raise ValueError("backbone_trainable_blocks must be between 0 and 12")
+    if config.vpr.model_family == "salad" and (
+        config.vpr.image_height, config.vpr.image_width
+    ) != (322, 322):
+        raise ValueError("Compact SALAD requires 322x322 input")
+    if config.vpr.train_domains not in {"day", "day_fake"}:
+        raise ValueError("vpr.train_domains must be day or day_fake")
     if config.vpr.cross_domain_aux not in {"none", "cross_domain_relation"}:
         raise ValueError("cross_domain_aux must be none or cross_domain_relation")
     if config.vpr.cross_domain_aux == "cross_domain_relation":
@@ -286,6 +351,16 @@ def validate_config(config: ExperimentConfig) -> None:
             raise ValueError("cross_domain_relation requires vpr.train_domains=day_fake")
         if config.vpr.sampler != "pk_balanced":
             raise ValueError("cross_domain_relation requires vpr.sampler=pk_balanced")
+    if config.vpr.relation_queue_scope not in {"dataset", "shared"}:
+        raise ValueError("relation_queue_scope must be dataset or shared")
+    if not isinstance(config.vpr.relation_mask_self, bool):
+        raise ValueError("relation_mask_self must be a boolean")
+    if (
+        isinstance(config.vpr.random_seed, bool)
+        or not isinstance(config.vpr.random_seed, int)
+        or config.vpr.random_seed < 0
+    ):
+        raise ValueError("vpr.random_seed must be a non-negative integer")
     if config.vpr.relation_queue_size < 0:
         raise ValueError("relation_queue_size cannot be negative")
     if config.vpr.relation_temperature <= 0:

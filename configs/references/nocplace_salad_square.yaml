@@ -1,0 +1,58 @@
+data:
+  robotcar_manifest: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/manifest.csv
+  robotcar_protocol: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/protocol.json
+  generated_root: data/generated/multidataset_qsattn_official_150k
+  tokyo_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/tokyo247
+  svox_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/svox
+  msls_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/MSLS
+vpr:
+  descriptor_dim: 512
+  image_height: 320
+  image_width: 320
+  batch_size: 8
+  workers: 4
+  datasets:
+  - msls
+  - robotcar
+  - svox
+evaluation:
+  protocol: project
+  database_domain: day
+  recalls:
+  - 1
+  - 5
+  - 10
+reference_models:
+  nocplace-r50-clean5k-resize320:
+    loader: cosplace_checkpoint
+    backbone: ResNet50
+    descriptor_dim: 512
+    native_size:
+    - 320
+    - 320
+    native_batch_size: 32
+    checkpoint: runs/reference/nocplace_protocol_clean5k/best_model.pth
+    official_checkpoint: false
+    training_status: substitute-data-reproduction
+    note: User-approved NocPlace clean5k checkpoint; shared R50-GeM-FC loader, direct
+      resize 320x320.
+  salad-dinov2-s-gsv-eval322:
+    loader: salad_student
+    backbone: DINOv2-S/14
+    backbone_name: dinov2_vits14
+    descriptor_dim: 544
+    native_size:
+    - 322
+    - 322
+    native_batch_size: 8
+    trainable_blocks: 4
+    repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+    backbone_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/salad/dinov2_vits14_pretrain.pth
+    checkpoint: runs/reference/salad-dinov2-s-544-gsv/last.ckpt
+    required_files:
+    - /home/admin123/diffusion_vpr_test/reference_code/salad/dinov2_vits14_pretrain.pth
+    - runs/reference/salad-dinov2-s-544-gsv/last.ckpt
+    official_checkpoint: false
+    training_status: re-trained-official-salad-small
+    note: GSV-Cities trained at 224; evaluated at 322 without retraining. Compact
+      544-D head.

@@ -7,6 +7,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from .salad import CompactSALADHead
+from .boq import BoQReferenceModel
+
 
 def _load_dinov2(repo: str, model_name: str = "dinov2_vitb14") -> nn.Module:
     # DINOv2 selects xFormers at import time, but its kernels are CUDA-only.
@@ -108,7 +111,7 @@ class SaladTeacher(nn.Module):
     def __init__(self, repo: str, checkpoint: str):
         super().__init__()
         self.backbone = _SaladBackbone(repo)
-        self.aggregator = _SaladHead()
+        self.aggregator = CompactSALADHead(768)
         _strict_load(self, checkpoint, "SALAD")
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
@@ -116,6 +119,13 @@ class SaladTeacher(nn.Module):
 
 
 def build_relation_teacher(name: str, repo: str, checkpoint: str) -> nn.Module:
-    if name != "salad":
-        raise ValueError(f"The CDND teacher must be salad, got {name!r}")
-    return SaladTeacher(repo, checkpoint).eval().requires_grad_(False)
+    if name == "salad":
+        return SaladTeacher(repo, checkpoint).eval().requires_grad_(False)
+    if name == "boq":
+        return BoQReferenceModel(
+            repo,
+            checkpoint,
+            backbone_name="dinov2_vitb14",
+            descriptor_dim=12_288,
+        ).eval().requires_grad_(False)
+    raise ValueError(f"The CDND teacher must be salad or boq, got {name!r}")

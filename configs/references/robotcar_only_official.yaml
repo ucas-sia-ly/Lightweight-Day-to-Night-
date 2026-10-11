@@ -1,0 +1,98 @@
+data:
+  robotcar_manifest: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/manifest.csv
+  robotcar_protocol: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/protocol.json
+  generator_manifest: data/manifests_robotcar_only/generator_train.csv
+  vpr_source_manifest: data/manifests_robotcar_only/vpr_train.csv
+  generated_root: data/generated/robotcar_only_qsattn30k
+  tokyo_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/tokyo247
+  svox_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/svox
+  msls_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/MSLS
+  dataset_weights:
+    robotcar: 1
+  output_height: 320
+  output_width: 480
+vpr:
+  output_dir: runs/vpr/robotcar_only_512/day_only_seed0
+  model_family: mixvpr
+  aggregator: mixvpr
+  descriptor_dim: 512
+  image_height: 320
+  image_width: 320
+  loss_profile: v2
+  random_seed: 0
+  train_domains: day
+  cross_domain_aux: none
+  relation_teacher: none
+  relation_teacher_repo: ''
+  relation_teacher_checkpoint: ''
+  relation_teacher_cache: ''
+  relation_teacher_input_size: 322
+  relation_queue_size: 2048
+  relation_temperature: 0.07
+  relation_weight: 0.5
+  relation_day_weight: 0.5
+  relation_mask_self: true
+  relation_queue_scope: dataset
+  epochs: 20
+  batch_size: 8
+  gradient_accumulation_steps: 2
+  workers: 4
+  encoder_lr: 1.0e-06
+  aggregator_lr: 1.0e-06
+  classifier_lr: 0.0001
+  classifier_warmup_lr: 0.001
+  classifier_warmup_epochs: 1
+  freeze_batch_norm: true
+  evaluate_epoch_zero: true
+  early_stopping: false
+  epoch_one_max_recall_drop: 0.0
+  init_checkpoint: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/checkpoints/resnet50_MixVPR_512_channels(256)_rows(2).ckpt
+  datasets:
+  - robotcar
+  min_class_images_by_dataset:
+    robotcar: 2
+  sampler: pk_balanced
+  pk_places_per_batch: 4
+  pk_images_per_place: 2
+  dataset_epoch_quotas:
+    robotcar: 8944
+  samples_per_epoch: 8944
+  scheduler: cosine
+  scheduler_min_lr_ratio: 0.01
+  resume: ''
+generator:
+  objective: qsattn
+  output_dir: runs/generator/robotcar_only_qsattn_seed0
+  max_steps: 30000
+  batch_size: 4
+  workers: 4
+  lr: 0.0002
+  checkpoint_every: 5000
+  content_weight: 1.0
+  num_patches: 256
+  feature_dim: 256
+  qs_mode: global
+  qs_nce_identity: true
+  qs_netf: mlp_sample
+  amp: true
+  resume: ''
+evaluation:
+  datasets:
+  - robotcar
+  protocol: project
+  database_domain: day
+  recalls:
+  - 1
+  - 5
+  - 10
+reference_models:
+  mixvpr-robotcar-official:
+    loader: official_mixvpr
+    descriptor_dim: 512
+    native_size:
+    - 320
+    - 320
+    native_batch_size: 16
+    checkpoint: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/checkpoints/resnet50_MixVPR_512_channels(256)_rows(2).ckpt
+    official_checkpoint: true
+    backbone: ResNet50

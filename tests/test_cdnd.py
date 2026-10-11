@@ -48,6 +48,22 @@ def test_pk_sampler_builds_single_dataset_four_by_two_batches_and_restores_curso
     assert [first, *remaining] != list(next_epoch)
 
 
+def test_pk_sampler_seed_changes_batches_and_old_seed_zero_state_still_restores():
+    rows = _rows()
+    seed_zero = PKBalancedBatchSampler(rows, {"a": 16, "b": 16}, 4, 2, random_seed=0)
+    seed_one = PKBalancedBatchSampler(rows, {"a": 16, "b": 16}, 4, 2, random_seed=1)
+    assert list(seed_zero) != list(seed_one)
+
+    current = PKBalancedBatchSampler(rows, {"a": 16, "b": 16}, 4, 2, random_seed=0)
+    iterator = iter(current)
+    next(iterator)
+    legacy = current.state_dict()
+    legacy["fixed_random_state"] = legacy.pop("random_seed")
+    restored = PKBalancedBatchSampler(rows, {"a": 16, "b": 16}, 4, 2, random_seed=0)
+    restored.load_state_dict(legacy)
+    assert list(restored) == list(iterator)
+
+
 def test_dataset_queue_is_fifo_isolated_and_round_trips():
     queue = DatasetNeighborhoodQueue(("a", "b"), capacity=3, device=torch.device("cpu"))
     for offset in (0, 2):
@@ -123,6 +139,47 @@ def test_cdnd_returns_differentiable_zero_without_valid_anchors():
     (fake_loss + day_loss).backward()
     assert fake.grad is not None
     assert day.grad is not None
+
+
+def test_disabling_self_mask_exposes_the_trivial_positive_candidate():
+    teacher_anchor = torch.tensor([[1.0, 0.0]])
+    teacher_candidates = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    fake_anchor = torch.tensor([[0.8, 0.2]], requires_grad=True)
+    day_anchor = torch.tensor([[0.9, 0.1]], requires_grad=True)
+    student_candidates = torch.tensor(
+        [[0.9, 0.1], [0.1, 0.9]], requires_grad=True
+    )
+    labels = torch.tensor([0])
+    candidate_labels = torch.tensor([0, 1])
+    anchor_keys = torch.tensor([7])
+    candidate_keys = torch.tensor([7, 8])
+
+    masked = cross_domain_neighborhood_loss(
+        teacher_anchor, teacher_candidates, fake_anchor, day_anchor,
+        student_candidates, labels, candidate_labels, anchor_keys, candidate_keys,
+        mask_self_matches=True,
+    )
+    unmasked = cross_domain_neighborhood_loss(
+        teacher_anchor, teacher_candidates, fake_anchor, day_anchor,
+        student_candidates, labels, candidate_labels, anchor_keys, candidate_keys,
+        mask_self_matches=False,
+    )
+    assert masked[2]["valid_anchors"].item() == 0
+    assert unmasked[2]["valid_anchors"].item() == 1
+    assert torch.isfinite(unmasked[0] + unmasked[1])
+
+
+def test_shared_queue_partition_contains_candidates_from_multiple_datasets():
+    queue = DatasetNeighborhoodQueue(("shared",), capacity=4, device=torch.device("cpu"))
+    teacher = torch.tensor([[1.0, 0.0]])
+    student = torch.tensor([[0.9, 0.1]])
+    queue.enqueue("shared", teacher, student, torch.tensor([0]), torch.tensor([10]))
+    queue.enqueue("shared", teacher, student, torch.tensor([1]), torch.tensor([20]))
+    candidates = queue.candidates(
+        "shared", teacher, student, torch.tensor([2]), torch.tensor([30])
+    )
+    assert candidates.labels.tolist() == [2, 0, 1]
+    assert candidates.image_keys.tolist() == [30, 10, 20]
 
 
 def test_sampler_and_queue_restore_produce_identical_next_relation_loss():

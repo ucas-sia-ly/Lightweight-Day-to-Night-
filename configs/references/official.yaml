@@ -1,0 +1,57 @@
+data:
+  robotcar_manifest: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/manifest.csv
+  robotcar_protocol: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/protocol.json
+  generator_manifest: data/manifests_clean_night/generator_train.csv
+  vpr_source_manifest: data/manifests_clean_night/vpr_train.csv
+  generated_root: data/generated/multidataset_qsattn_official_150k
+  tokyo_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/tokyo247
+  svox_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/svox
+  msls_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/MSLS
+vpr:
+  descriptor_dim: 512
+  image_height: 320
+  image_width: 480
+  datasets: [msls, robotcar, svox]
+reference_models:
+  mixvpr-r50-128:
+    loader: official_mixvpr
+    descriptor_dim: 128
+    native_size: [320, 320]
+    native_batch_size: 32
+    checkpoint: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/checkpoints/resnet50_MixVPR_128_channels(64)_rows(2).ckpt
+    download_url: https://github.com/amaralibey/MixVPR
+    note: Official-style ResNet50 MixVPR 128-D checkpoint with a 64-channel x 2-row head.
+
+  netvlad-vgg16-pitts4096:
+    loader: netvlad_pytorch
+    backbone: VGG16
+    descriptor_dim: 4096
+    num_clusters: 64
+    native_size: [480, 640]
+    native_batch_size: 1
+    repo: /home/admin123/diffusion_vpr_test/reference_code/Patch-NetVLAD
+    checkpoint: /home/admin123/diffusion_vpr_test/reference_code/Patch-NetVLAD/pretrained_models/pitts_WPCA4096.pth.tar
+    download_url: https://huggingface.co/TobiasRobotics/Patch-NetVLAD/resolve/main/pittsburgh_WPCA4096.pth.tar?download=true
+    note: Public PyTorch Pitts30k checkpoint evaluated as a global NetVLAD descriptor.
+
+  boq-dinov2-12288:
+    loader: boq_reference
+    backbone: DINOv2-B
+    descriptor_dim: 12288
+    native_size: [322, 322]
+    native_batch_size: 16
+    repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+    checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_12288.pth
+    note: Official BoQ DINOv2 checkpoint with its native 12,288-D descriptor.
+
+  boq-dinov2-pca512:
+    loader: boq_pca
+    backbone: DINOv2-B
+    descriptor_dim: 512
+    native_size: [322, 322]
+    native_batch_size: 16
+    repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+    checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_12288.pth
+    projection_checkpoint: data/reference_pca/boq_train20k_pca512.pt
+    required_files: [data/reference_pca/boq_train20k_pca512.pt]
+    note: BoQ encoder followed by a 512-D PCA fitted only on daytime training images; encoder parameters are unchanged.

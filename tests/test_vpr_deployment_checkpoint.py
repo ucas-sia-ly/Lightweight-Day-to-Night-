@@ -32,6 +32,7 @@ def test_training_checkpoint_conversion_is_model_exact_and_strips_training_asset
     payload = torch.load(inference, map_location="cpu", weights_only=True)
     assert payload["kind"] == "vpr_inference"
     assert payload["descriptor_dim"] == 512
+    assert payload["random_seed"] == 0
     assert torch.equal(payload["model"]["encoder.weight"], model_state["encoder.weight"])
     forbidden = {
         "classifier", "optimizer", "relation_queue_state", "sampler_state",
@@ -45,4 +46,17 @@ def test_deployment_loader_rejects_checkpoint_dimension_mismatch(tmp_path):
     checkpoint = tmp_path / "wrong-dimension.pt"
     torch.save({"kind": "vpr_inference", "descriptor_dim": 128, "model": {}}, checkpoint)
     with pytest.raises(ValueError, match="descriptor dimension"):
+        load_vpr_model(config, checkpoint)
+
+
+def test_deployment_loader_rejects_checkpoint_seed_mismatch(tmp_path):
+    config = ExperimentConfig(DataConfig("robot.csv", "protocol.json", "external.csv"))
+    checkpoint = tmp_path / "wrong-seed.pt"
+    torch.save({
+        "kind": "vpr_inference",
+        "descriptor_dim": 512,
+        "random_seed": 3,
+        "model": {},
+    }, checkpoint)
+    with pytest.raises(ValueError, match="random seed"):
         load_vpr_model(config, checkpoint)

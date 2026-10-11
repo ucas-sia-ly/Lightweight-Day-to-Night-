@@ -1,14 +1,16 @@
 import csv
 import io
+import json
 from pathlib import Path
 
 import pytest
 import torch
 from PIL import Image
 
-from a2b_lightvpr.reference_models import (
+from a2b_lightvpr.references.models import (
     FixedResizeTransform,
     SuiteRow,
+    _strict_state,
     _msls_rows,
     _robotcar_day_rows,
     _svox_rows,
@@ -17,12 +19,28 @@ from a2b_lightvpr.reference_models import (
     benchmark_reference_models,
     evaluate_dual_encoder,
     fetch_reference_model,
+    validate_reference_resources,
 )
 from a2b_lightvpr.config import DataConfig, ExperimentConfig
 from a2b_lightvpr.transforms import VPRTransform
 
 
 DATA_ROOT = Path("/home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset")
+
+
+def test_strict_state_loads_training_checkpoint_with_numpy_rng(tmp_path):
+    source = torch.nn.Linear(3, 2)
+    checkpoint = tmp_path / "training.pt"
+    torch.save(
+        {"model": source.state_dict(), "rng": {"numpy": __import__("numpy").random.get_state()}},
+        checkpoint,
+    )
+    target = torch.nn.Linear(3, 2)
+
+    _strict_state(target, checkpoint)
+
+    for expected, actual in zip(source.parameters(), target.parameters()):
+        assert torch.equal(expected, actual)
 
 
 def test_reference_registry_reports_ready_and_missing_models(tmp_path):
@@ -102,6 +120,8 @@ def test_day_validation_queries_do_not_overlap_vpr_training_manifest():
     manifest = Path("data/manifests_clean_night/vpr_train.csv")
     if not manifest.is_file():
         pytest.skip("VPR training manifest unavailable")
+    if not any((DATA_ROOT / name).is_dir() for name in ("MSLS", "svox")):
+        pytest.skip("Local MSLS/SVOX validation datasets unavailable")
     with manifest.open(newline="", encoding="utf-8") as handle:
         training = {str(Path(row["source_path"]).resolve()) for row in csv.DictReader(handle)}
     day_queries = []
@@ -178,6 +198,34 @@ def test_fetch_reference_model_is_explicit_and_records_hash(tmp_path, monkeypatc
     assert checkpoint.with_suffix(checkpoint.suffix + ".json").is_file()
 
 
+def test_reference_resource_validation_checks_all_artifact_hashes(tmp_path):
+    checkpoint = tmp_path / "model.pt"
+    vocabulary = tmp_path / "vocabulary.pt"
+    checkpoint.write_bytes(b"model")
+    vocabulary.write_bytes(b"vocabulary")
+    registry = tmp_path / "models.yaml"
+    registry.write_text(
+        "reference_models:\n"
+        "  small:\n"
+        "    loader: fixture\n"
+        "    descriptor_dim: 4\n"
+        f"    checkpoint: {checkpoint}\n"
+        f"    required_files: [{vocabulary}]\n",
+        encoding="utf-8",
+    )
+    from a2b_lightvpr.checkpointing import file_sha256
+    resources = tmp_path / "resources.json"
+    resources.write_text(json.dumps({"models": {"small": {
+        "checkpoint_sha256": file_sha256(checkpoint),
+        "required_artifacts": {
+            str(vocabulary.resolve()): {"sha256": file_sha256(vocabulary)}
+        },
+    }}}), encoding="utf-8")
+    assert validate_reference_resources(registry, resources, ("small",))
+    vocabulary.write_bytes(b"changed")
+    assert not validate_reference_resources(registry, resources, ("small",))
+
+
 def test_fetch_reference_model_resumes_partial_download(tmp_path, monkeypatch):
     checkpoint = tmp_path / "pitts.pth.tar"
     partial = checkpoint.with_suffix(checkpoint.suffix + ".part")
@@ -235,7 +283,7 @@ def test_reference_benchmark_reports_storage_and_batch_dependence(tmp_path, monk
             value = images.mean((1, 2, 3)).unsqueeze(1) * self.weight
             return torch.nn.functional.normalize(value + 1.0, dim=1)
 
-    monkeypatch.setattr("a2b_lightvpr.reference_models.build_reference_model", lambda spec: Model())
+    monkeypatch.setattr("a2b_lightvpr.references.models.build_reference_model", lambda spec: Model())
     monkeypatch.setattr("torch.cuda.is_available", lambda: False)
     config = ExperimentConfig(DataConfig("robot.csv", "protocol.json"))
     output = benchmark_reference_models(
@@ -248,3 +296,37 @@ def test_reference_benchmark_reports_storage_and_batch_dependence(tmp_path, monk
         32_000_000 / 1024**3
     )
     assert metrics["batch_dependence"] is not None
+
+
+def test_crica_pca_rejects_batch_dependent_feature_mixing(monkeypatch, tmp_path):
+    from a2b_lightvpr.references import pca as reference_pca
+
+    monkeypatch.setattr(reference_pca, "_registry", lambda _: {
+        "crica": {"loader": "cricavpr_small", "descriptor_dim": 5376, "batch_dependent": True},
+    })
+    with pytest.raises(ValueError, match="batch-size=1"):
+        reference_pca.fit_reference_pca(
+            None, "unused", "crica", tmp_path / "pca.pt", tmp_path / "cache.npy",
+            batch_size=16,
+        )
+
+
+def test_crica_pca_single_image_mode_reaches_gsv_selection(monkeypatch, tmp_path):
+    from a2b_lightvpr.references import pca as reference_pca
+
+    monkeypatch.setattr(reference_pca, "_registry", lambda _: {
+        "crica": {
+            "loader": "cricavpr_small", "descriptor_dim": 5376,
+            "batch_dependent": True, "fit_source": "gsv_cities", "fit_root": "gsv",
+        },
+    })
+    def selected(root, count, seed):
+        assert (root, count, seed) == ("gsv", 20000, 0)
+        raise LookupError("reached GSV selection")
+
+    monkeypatch.setattr(reference_pca, "select_gsv_images", selected)
+    with pytest.raises(LookupError, match="reached GSV selection"):
+        reference_pca.fit_reference_pca(
+            None, "unused", "crica", tmp_path / "pca.pt", tmp_path / "cache.npy",
+            batch_size=1,
+        )

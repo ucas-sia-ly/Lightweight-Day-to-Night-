@@ -1,14 +1,21 @@
+# Python build and tool caches
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 *.egg-info/
 build/
 dist/
-runs/
-data/generated/
-reports/
-data/
-logs/
-paper_latex/
-tests/
+
+# Local datasets, weights and generated experiment outputs
+/data/
+/runs/
+/reports/
+/logs/
+*.log
+
+# Local environments and editor/OS artifacts
+.venv/
+venv/
+.DS_Store

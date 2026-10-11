@@ -74,8 +74,8 @@ class _TeacherImages(Dataset):
 
 def cache_relation_teacher(config: ExperimentConfig) -> Path:
     cfg = config.vpr
-    if cfg.relation_teacher != "salad":
-        raise ValueError("cache-vpr-teacher requires relation_teacher=salad")
+    if cfg.relation_teacher not in {"salad", "boq"}:
+        raise ValueError("cache-vpr-teacher requires relation_teacher=salad or boq")
     manifest = Path(config.data.generated_root) / "manifest.csv"
     rows = read_generated_manifest(manifest)
     if any(row.get("split") != "train" for row in rows):

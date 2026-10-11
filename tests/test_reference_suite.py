@@ -5,8 +5,8 @@ import torch
 from PIL import Image
 
 from a2b_lightvpr.config import DataConfig, ExperimentConfig
-from a2b_lightvpr.reference_models import SuiteRow
-from a2b_lightvpr import reference_suite
+from a2b_lightvpr.references.models import SuiteRow
+from a2b_lightvpr.references import suite as reference_suite
 
 
 def test_reference_suite_uses_shared_protocol_and_cache(tmp_path, monkeypatch):

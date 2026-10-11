@@ -7,7 +7,7 @@ import torch
 
 from .checkpointing import file_sha256, write_json
 from .config import ExperimentConfig
-from .reference_models import (
+from .references.models import (
     evaluate_dual_encoder,
     evaluation_fingerprint,
     query_protocol_fingerprint,
@@ -76,6 +76,7 @@ def _suite_summary_values(payload: dict, selected: tuple[str, ...]) -> dict:
         "suite/checkpoint_sha256": payload["checkpoint_sha256"],
         "suite/manifest_sha256": payload["manifest_sha256"],
         "suite/descriptor_dim": payload["descriptor_dim"],
+        "suite/random_seed": payload.get("random_seed", 0),
         "suite/initialization": payload["initialization"],
         "suite/encoder": payload["encoder"],
         "suite/input_size": payload["input_size"],
@@ -118,9 +119,25 @@ def evaluate_trained_suite(
             and cached.get("input_size") == [
                 config.vpr.image_height, config.vpr.image_width
             ]
+            and cached.get("random_seed", 0) == config.vpr.random_seed
         )
         if cache_matches:
             changed = False
+            training_identity = {
+                "train_domains": config.vpr.train_domains,
+                "cross_domain_aux": config.vpr.cross_domain_aux,
+                "relation_weight": config.vpr.relation_weight,
+                "relation_day_weight": config.vpr.relation_day_weight,
+                "relation_queue_size": config.vpr.relation_queue_size,
+                "relation_mask_self": config.vpr.relation_mask_self,
+                "relation_queue_scope": config.vpr.relation_queue_scope,
+            }
+            if cached.get("random_seed") != config.vpr.random_seed:
+                cached["random_seed"] = config.vpr.random_seed
+                changed = True
+            if cached.get("training") != training_identity:
+                cached["training"] = training_identity
+                changed = True
             for name in set(selected).intersection(cached.get("datasets", {})):
                 metrics = cached["datasets"][name]
                 dataset, split, radius, yaw, _ = SUITE_PROTOCOLS[name]
@@ -162,16 +179,35 @@ def evaluate_trained_suite(
         "database_manifest_sha256": database_manifest_sha256,
         "checkpoint_epoch": int(state.get("epoch", 0)),
         "model_family": config.vpr.model_family,
-        "initialization": config.vpr.init_checkpoint or "torchvision_imagenet",
+        "initialization": (
+            config.vpr.backbone_checkpoint
+            if config.vpr.model_family in {"salad", "dino_mix"}
+            else config.vpr.init_checkpoint or "torchvision_imagenet"
+        ),
         "encoder": config.vpr.model_family,
         "aggregator": config.vpr.aggregator,
         "descriptor_dim": config.vpr.descriptor_dim,
+        "random_seed": config.vpr.random_seed,
+        "training": {
+            "train_domains": config.vpr.train_domains,
+            "cross_domain_aux": config.vpr.cross_domain_aux,
+            "relation_weight": config.vpr.relation_weight,
+            "relation_day_weight": config.vpr.relation_day_weight,
+            "relation_queue_size": config.vpr.relation_queue_size,
+            "relation_mask_self": config.vpr.relation_mask_self,
+            "relation_queue_scope": config.vpr.relation_queue_scope,
+        },
         "input_size": [config.vpr.image_height, config.vpr.image_width],
         "datasets": {},
     }
-    if config.vpr.init_checkpoint:
+    initialization_checkpoint = (
+        config.vpr.backbone_checkpoint
+        if config.vpr.model_family in {"salad", "dino_mix"}
+        else config.vpr.init_checkpoint
+    )
+    if initialization_checkpoint:
         initial_checkpoint = Path(resolve_initial_checkpoint(
-            config.vpr.init_checkpoint, config.vpr.descriptor_dim
+            initialization_checkpoint, config.vpr.descriptor_dim
         ))
         payload["initial_checkpoint_sha256"] = file_sha256(initial_checkpoint)
     if "benchmark" not in payload:

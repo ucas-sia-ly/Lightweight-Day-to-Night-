@@ -26,6 +26,12 @@ def load_vpr_model(config: ExperimentConfig, checkpoint: str | Path | None = Non
             f"Checkpoint descriptor dimension {checkpoint_dim} does not match "
             f"configuration dimension {cfg.descriptor_dim}"
         )
+    checkpoint_seed = int(state.get("random_seed", 0))
+    if checkpoint_seed != config.vpr.random_seed:
+        raise ValueError(
+            f"Checkpoint random seed {checkpoint_seed} does not match "
+            f"configuration seed {config.vpr.random_seed}"
+        )
     model = build_descriptor_model(
         cfg.aggregator,
         image_height=cfg.image_height,
@@ -37,6 +43,10 @@ def load_vpr_model(config: ExperimentConfig, checkpoint: str | Path | None = Non
         init_checkpoint=(
             cfg.init_checkpoint if cfg.model_family in {"mixvpr", "netvlad"} else ""
         ),
+        backbone_name=cfg.backbone_name,
+        backbone_repo=cfg.backbone_repo,
+        backbone_checkpoint=cfg.backbone_checkpoint,
+        backbone_trainable_blocks=cfg.backbone_trainable_blocks,
     )
     model.load_state_dict(state["model"])
     return model, state, checkpoint

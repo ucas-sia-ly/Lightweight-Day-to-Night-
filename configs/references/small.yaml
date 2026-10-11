@@ -1,0 +1,157 @@
+data:
+  robotcar_manifest: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/manifest.csv
+  robotcar_protocol: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/protocol.json
+  generator_manifest: data/manifests_clean_night/generator_train.csv
+  vpr_source_manifest: data/manifests_clean_night/vpr_train.csv
+  generated_root: data/generated/multidataset_qsattn_official_150k
+  tokyo_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/tokyo247
+  svox_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/svox
+  msls_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/MSLS
+vpr:
+  descriptor_dim: 512
+  image_height: 322
+  image_width: 322
+  batch_size: 8
+  workers: 4
+  datasets: [msls, robotcar, svox]
+evaluation:
+  protocol: project
+  database_domain: day
+  recalls: [1, 5, 10]
+
+reference_models:
+  salad-dinov2-s-544-gsv:
+    loader: salad_student
+    backbone: DINOv2-S/14
+    backbone_name: dinov2_vits14
+    descriptor_dim: 544
+    native_size: [224, 224]
+    native_batch_size: 32
+    trainable_blocks: 4
+    repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+    backbone_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/salad/dinov2_vits14_pretrain.pth
+    checkpoint: runs/reference/salad-dinov2-s-544-gsv/last.ckpt
+    required_files:
+      - /home/admin123/diffusion_vpr_test/reference_code/salad/dinov2_vits14_pretrain.pth
+      - runs/reference/salad-dinov2-s-544-gsv/last.ckpt
+    official_checkpoint: false
+    training_status: re-trained-official-salad-small
+    note: Official SALAD training recipe on GSV-Cities with DINOv2-S and a compact 544-D SALAD head; third-party source is unmodified.
+
+  salad-small-544:
+    loader: salad_student
+    backbone: DINOv2-S/14-Reg4
+    backbone_name: dinov2_vits14_reg
+    descriptor_dim: 544
+    native_size: [322, 322]
+    native_batch_size: 16
+    trainable_blocks: 2
+    repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+    backbone_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth
+    checkpoint: runs/vpr/salad_small_544/cdnd_salad_base_seed0/model_best.pt
+    required_files:
+      - /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth
+      - runs/vpr/salad_small_544/cdnd_salad_base_seed0/final_suite/summary.json
+    official_checkpoint: false
+    training_status: re-trained-and-distilled
+    note: Compact SALAD-S trained with CDND; not an official SALAD checkpoint.
+
+  boq-dinov2-s-12288:
+    loader: boq_small
+    backbone: DINOv2-S/14-Reg4
+    backbone_name: dinov2_vits14_reg
+    descriptor_dim: 12288
+    native_size: [322, 322]
+    native_batch_size: 8
+    trainable_blocks: 2
+    repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+    aggregator_repo: /home/admin123/diffusion_vpr_test/reference_code/Bag-of-Queries
+    backbone_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth
+    teacher_repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+    teacher_backbone_name: dinov2_vitb14
+    teacher_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_12288.pth
+    distillation_loss: cross_domain_neighborhood
+    distillation_weight: 0.0
+    checkpoint: runs/vpr/boq_small_12288/cdnd_boq_base_seed0/model_best.pt
+    required_files:
+      - /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth
+      - /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_12288.pth
+    fit_source: gsv_cities
+    fit_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/gsv-cities
+    official_checkpoint: false
+    training_status: re-trained-cdnd-pending
+    note: BoQ-S trained with a frozen BoQ-B teacher over candidate neighborhoods; accuracy is pending the CDND-specific run.
+
+  boq-dinov2-s-pca512:
+    loader: boq_pca
+    source_loader: boq_small
+    source_descriptor_dim: 12288
+    backbone: DINOv2-S/14-Reg4
+    backbone_name: dinov2_vits14_reg
+    descriptor_dim: 512
+    native_size: [322, 322]
+    native_batch_size: 8
+    trainable_blocks: 2
+    repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+    aggregator_repo: /home/admin123/diffusion_vpr_test/reference_code/Bag-of-Queries
+    backbone_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth
+    teacher_repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+    teacher_backbone_name: dinov2_vitb14
+    teacher_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_12288.pth
+    distillation_loss: cross_domain_neighborhood
+    distillation_weight: 0.0
+    checkpoint: runs/vpr/boq_small_12288/cdnd_boq_base_seed0/model_best.pt
+    projection_checkpoint: data/reference_pca/boq_dinov2_s_cdnd_train_pca512.pt
+    required_files:
+      - /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth
+      - /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_12288.pth
+      - data/reference_pca/boq_dinov2_s_cdnd_train_pca512.pt
+    official_checkpoint: false
+    training_status: re-trained-cdnd-descriptor-compressed-pending
+    note: The PCA layer compresses descriptors only and does not reduce encoder parameters.
+
+  anyloc-dinov2-s-12288:
+    loader: anyloc_small
+    backbone: DINOv2-S/14-Reg4
+    backbone_name: dinov2_vits14_reg
+    descriptor_dim: 12288
+    native_size: [322, 322]
+    native_batch_size: 8
+    repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+    checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth
+    vocabulary: data/reference_vocab/anyloc_dinov2_s_l11_token_c32_urban_v2.pt
+    required_files:
+      - data/reference_vocab/anyloc_dinov2_s_l11_token_c32_urban_v2.pt
+      - data/reference_vocab/anyloc_dinov2_s_l11_token_c32_urban_v2.json
+    fit_source: gsv_cities
+    fit_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/gsv-cities
+    layer: 11
+    facet: token
+    num_clusters: 32
+    official_checkpoint: false
+    training_status: re-fitted
+    note: AnyLoc vocabulary re-fitted with DINOv2-S/14-Reg4 on GSV-Cities.
+
+  anyloc-dinov2-s-pca512:
+    loader: boq_pca
+    source_loader: anyloc_small
+    source_descriptor_dim: 12288
+    backbone: DINOv2-S/14-Reg4
+    backbone_name: dinov2_vits14_reg
+    descriptor_dim: 512
+    native_size: [322, 322]
+    native_batch_size: 8
+    repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+    checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth
+    vocabulary: data/reference_vocab/anyloc_dinov2_s_l11_token_c32_urban_v2.pt
+    projection_checkpoint: data/reference_pca/anyloc_dinov2_s_block11_train_pca512.pt
+    required_files:
+      - data/reference_vocab/anyloc_dinov2_s_l11_token_c32_urban_v2.pt
+      - data/reference_vocab/anyloc_dinov2_s_l11_token_c32_urban_v2.json
+      - data/reference_pca/anyloc_dinov2_s_block11_train_pca512.pt
+    layer: 11
+    facet: token
+    num_clusters: 32
+    official_checkpoint: false
+    training_status: re-fitted-descriptor-compressed
+    note: The PCA layer compresses descriptors only and does not reduce encoder parameters.
