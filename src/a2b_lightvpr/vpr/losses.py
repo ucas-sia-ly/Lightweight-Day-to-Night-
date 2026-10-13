@@ -134,3 +134,161 @@ def cross_domain_neighborhood_loss(
     return relation_kl(fake_anchor), relation_kl(day_anchor), {
         "valid_anchors": valid_anchors.sum().detach()
     }
+
+
+def multi_positive_place_loss(
+    descriptors: torch.Tensor,
+    labels: torch.Tensor,
+    source_keys: torch.Tensor,
+    *,
+    temperature: float = 0.07,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Supervised contrastive loss across distinct source images of a place.
+
+    All views of the anchor's source are excluded from the denominator.  Thus a
+    day/fake or day/augmentation pair cannot satisfy the positive requirement.
+    Each distinct-source positive contributes its own log probability, rather
+    than allowing one easy positive to dominate a summed positive probability.
+    """
+    if descriptors.ndim != 2 or labels.shape != descriptors.shape[:1] or source_keys.shape != labels.shape:
+        raise ValueError("Place descriptors and metadata must have matching [N] batch dimensions")
+    if not temperature > 0:
+        raise ValueError("Place contrastive temperature must be positive")
+    candidates = source_keys[:, None].ne(source_keys[None, :])
+    same_place = labels[:, None].eq(labels[None, :])
+    positives = candidates & same_place
+    negatives = candidates & ~same_place
+    valid = positives.any(dim=1) & negatives.any(dim=1)
+    stats = {
+        "place_valid_anchors": valid.sum().detach(),
+        "place_positive_pairs": positives[valid].sum().detach(),
+    }
+    if not bool(valid.any()):
+        return descriptors.sum() * 0.0, stats
+    value = F.normalize(descriptors.float(), dim=1)
+    logits = (value @ value.T / float(temperature))[valid]
+    logits = logits.masked_fill(~candidates[valid], -torch.inf)
+    log_probability = logits - torch.logsumexp(logits, dim=1, keepdim=True)
+    positive_log_probability = torch.where(
+        positives[valid], log_probability, torch.zeros_like(log_probability)
+    )
+    loss = -(positive_log_probability.sum(dim=1) / positives[valid].sum(dim=1)).mean()
+    return loss, stats
+
+
+def patch_validity_mask(
+    valid_mask: torch.Tensor,
+    features: torch.Tensor,
+) -> torch.Tensor:
+    """Flatten a patch mask, or conservatively reduce a pixel mask to patches."""
+    batch, _, height, width = features.shape
+    if valid_mask.shape == (batch, height * width):
+        return valid_mask.bool()
+    if valid_mask.ndim != 3 or valid_mask.shape[0] != batch:
+        raise ValueError("Validity masks must have shape [B,H,W] or [B,P]")
+    if valid_mask.shape[-2:] == (height, width):
+        return valid_mask.bool().flatten(1)
+    coverage = F.adaptive_avg_pool2d(valid_mask.float().unsqueeze(1), (height, width))
+    # A token touching any padding is excluded from local supervision.
+    return coverage[:, 0].flatten(1).ge(1.0 - 1e-6)
+
+
+@torch.no_grad()
+def frozen_patch_reliability_target(
+    day_features: torch.Tensor,
+    augmented_features: torch.Tensor,
+    day_images: torch.Tensor,
+    valid_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Detached stability × information heuristic for geometrically aligned views.
+
+    The reference features must come from a frozen, evaluation-mode DINOv2.
+    Feature deviation from the valid-image mean measures local distinctiveness;
+    within-patch RGB spatial variation downweights uniform areas.  This is a
+    soft heuristic, not a semantic guarantee that a token is a fixed landmark.
+    """
+    if day_features.shape != augmented_features.shape or day_features.ndim != 4:
+        raise ValueError("Frozen reference features must have matching [B,C,H,W] shapes")
+    if day_images.ndim != 4 or day_images.shape[:2] != (day_features.shape[0], 3):
+        raise ValueError("Day images must have shape [B,3,H,W]")
+    valid = patch_validity_mask(valid_mask, day_features)
+    value = F.normalize(day_features.detach().float().flatten(2), dim=1)
+    augmented = F.normalize(augmented_features.detach().float().flatten(2), dim=1)
+    stability = (value * augmented).sum(dim=1).clamp(0.0, 1.0)
+    valid_weights = valid[:, None].to(value.dtype)
+    image_mean = (value * valid_weights).sum(dim=2) / valid_weights.sum(dim=2).clamp_min(1.0)
+    image_mean = F.normalize(image_mean, dim=1)
+    distinctiveness = (
+        4.0 * (1.0 - (value * image_mean.unsqueeze(-1)).sum(dim=1))
+    ).clamp(0.0, 1.0)
+    mean = day_images.new_tensor((0.485, 0.456, 0.406)).view(1, 3, 1, 1)
+    std = day_images.new_tensor((0.229, 0.224, 0.225)).view(1, 3, 1, 1)
+    rgb = (day_images.detach().float() * std.float() + mean.float()).clamp(0.0, 1.0)
+    grid = day_features.shape[-2:]
+    if rgb.shape[-2] % grid[0] or rgb.shape[-1] % grid[1]:
+        raise ValueError("Aligned reference image dimensions must divide evenly into the patch grid")
+    patch_height, patch_width = rgb.shape[-2] // grid[0], rgb.shape[-1] // grid[1]
+    pixels = rgb.unfold(2, patch_height, patch_height).unfold(3, patch_width, patch_width)
+    # var is stable for constant patches; E[x²] - E[x]² can leave cancellation
+    # noise that gives a uniform sky a spurious nonzero texture target.
+    pixel_variance = pixels.var(dim=(-2, -1), unbiased=False)
+    texture = (pixel_variance.mean(dim=1).sqrt().flatten(1) / 0.05).clamp(0.0, 1.0)
+    return (stability * distinctiveness * texture * valid).detach()
+
+
+def stable_local_consistency_loss(
+    day_features: torch.Tensor,
+    augmented_features: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Cosine consistency only on aligned, informative reference patches."""
+    if day_features.shape != augmented_features.shape:
+        raise ValueError("Student local features must share matching geometry")
+    valid = patch_validity_mask(valid_mask, day_features)
+    if target.shape != valid.shape:
+        raise ValueError("Reference target must match the student patch grid")
+    weight = target.detach().float().clamp(0.0, 1.0) * valid
+    discrepancy = 1.0 - F.cosine_similarity(
+        day_features.float().flatten(2), augmented_features.float().flatten(2), dim=1
+    )
+    loss = (discrepancy.clamp_min(0.0) * weight).sum() / weight.sum().clamp_min(1e-12)
+    return loss, {
+        "stable_valid_patches": valid.sum().detach(),
+        "stable_target_mean": (weight.sum() / valid.sum().clamp_min(1)).detach(),
+    }
+
+
+def patch_reliability_loss(
+    reliability: torch.Tensor,
+    valid_mask: torch.Tensor,
+    target: torch.Tensor | None = None,
+    *,
+    floor: float = 0.25,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Optional detached BCE supervision and a per-image valid-patch mean floor."""
+    if reliability.ndim != 2 or valid_mask.shape != reliability.shape:
+        raise ValueError("Reliability and validity must have matching [B,P] shapes")
+    if not 0.0 <= floor <= 1.0:
+        raise ValueError("Reliability floor must lie in [0,1]")
+    if target is not None and target.shape != reliability.shape:
+        raise ValueError("Reliability target must match [B,P]")
+    valid = valid_mask.bool()
+    counts = valid.sum(dim=1)
+    valid_images = counts.gt(0)
+    value = reliability.float()
+    means = (value * valid).sum(dim=1) / counts.clamp_min(1)
+    zero = value.sum() * 0.0
+    mean_floor = (F.relu(float(floor) - means[valid_images]).mean() if bool(valid_images.any()) else zero)
+    supervised = zero
+    if target is not None and bool(valid.any()):
+        supervised = F.binary_cross_entropy(
+            value[valid].clamp(1e-6, 1.0 - 1e-6),
+            target.detach().float()[valid].clamp(0.0, 1.0),
+        )
+    return supervised + mean_floor, {
+        "reliability_bce": supervised.detach(),
+        "reliability_floor_loss": mean_floor.detach(),
+        "reliability_valid_mean": (means[valid_images].mean().detach() if bool(valid_images.any()) else zero.detach()),
+        "reliability_valid_patches": valid.sum().detach(),
+    }

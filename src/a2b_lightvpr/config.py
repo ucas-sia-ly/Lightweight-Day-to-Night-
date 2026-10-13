@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,17 @@ class VPRConfig:
     relation_queue_scope: str = "dataset"
     pk_places_per_batch: int = 4
     pk_images_per_place: int = 2
+    stable_place_weight: float = 1.0
+    stable_place_temperature: float = 0.07
+    stable_stability_weight: float = 0.0
+    stable_reliability_weight: float = 0.01
+    stable_reliability_target: str = "none"
+    stable_reliability_floor: float = 0.25
+    stable_dustbin_enabled: bool = True
+    stable_dustbin_gamma_init: float = 1.0
+    stable_dustbin_gamma_max: float = 4.0
+    stable_sinkhorn_iterations: int = 20
+    stable_feature_fusion: str = "none"
 
 
 @dataclass(frozen=True)
@@ -121,6 +133,7 @@ class EvalConfig:
     protocol: str = "project"
     datasets: tuple[str, ...] = ("robotcar",)
     database_domain: str = "day"
+    fake_database_manifest: str = ""
 
 
 @dataclass(frozen=True)
@@ -202,7 +215,7 @@ def validate_config(config: ExperimentConfig) -> None:
     if config.generator.qs_netf != "mlp_sample":
         raise ValueError("The active official QS-Attn objective requires qs_netf=mlp_sample")
     if config.vpr.model_family not in {
-        "custom", "cosplace", "eigenplaces", "mixvpr", "netvlad", "salad", "boq", "dino_mix"
+        "custom", "cosplace", "eigenplaces", "mixvpr", "netvlad", "salad", "boq", "dino_mix", "stable_night_salad"
     }:
         raise ValueError(
             "vpr.model_family must be custom, cosplace, eigenplaces, mixvpr, "
@@ -230,6 +243,50 @@ def validate_config(config: ExperimentConfig) -> None:
             raise ValueError("Strong relation teachers require relation_teacher_cache")
     if config.vpr.descriptor_dim not in {128, 512, 544, 2048, 4096, 12288}:
         raise ValueError("vpr.descriptor_dim must be 128, 512, 544, 2048, 4096, or 12288")
+    if config.vpr.model_family == "stable_night_salad":
+        cfg = config.vpr
+        for name in ("backbone_trainable_blocks", "pk_places_per_batch", "pk_images_per_place"):
+            if isinstance(getattr(cfg, name), bool) or not isinstance(getattr(cfg, name), int):
+                raise ValueError(f"StableNight {name} must be an integer")
+        if cfg.aggregator != "salad" or cfg.descriptor_dim != 544 or (cfg.image_height, cfg.image_width) != (322, 322):
+            raise ValueError("StableNight-SALAD requires SALAD, 544D, and 322x322 input")
+        if cfg.backbone_name not in {"dinov2_vits14", "dinov2_vits14_reg"}:
+            raise ValueError("StableNight-SALAD requires DINOv2-S/14")
+        if not cfg.backbone_repo or not cfg.backbone_checkpoint or not 0 <= cfg.backbone_trainable_blocks <= 12:
+            raise ValueError("StableNight-SALAD requires local backbone weights and 0--12 trainable blocks")
+        if cfg.cross_domain_aux != "none" or cfg.classifier_warmup_epochs != 0:
+            raise ValueError("Stage-one StableNight-SALAD requires no CDND or classifier warmup")
+        if cfg.sampler != "pk_balanced" or cfg.pk_places_per_batch < 2 or cfg.pk_images_per_place < 2:
+            raise ValueError("StableNight place contrastive training requires PK with P>=2 and K>=2")
+        if cfg.train_domains not in {"day_only", "day_aug", "day_fake", "day_aug_fake"}:
+            raise ValueError("StableNight train_domains must be day_only, day_aug, day_fake, or day_aug_fake")
+        for name in ("stable_place_weight", "stable_stability_weight", "stable_reliability_weight"):
+            value = getattr(cfg, name)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
+        if cfg.stable_place_weight == 0 and cfg.stable_stability_weight == 0 and cfg.stable_reliability_weight == 0:
+            raise ValueError("At least one StableNight loss must be enabled")
+        if not math.isfinite(cfg.stable_place_temperature) or cfg.stable_place_temperature <= 0:
+            raise ValueError("StableNight place temperature must be finite and positive")
+        if not 0 <= cfg.stable_reliability_floor <= 1:
+            raise ValueError("StableNight reliability floor must be in [0,1]")
+        if cfg.stable_reliability_target not in {"none", "augmentation"}:
+            raise ValueError("StableNight reliability target must be none or augmentation")
+        needs_local = cfg.stable_stability_weight > 0 or (
+            cfg.stable_reliability_weight > 0 and cfg.stable_reliability_target == "augmentation"
+        )
+        if needs_local and cfg.train_domains not in {"day_aug", "day_aug_fake"}:
+            raise ValueError("StableNight local losses require geometrically aligned Day/Aug views")
+        if cfg.stable_stability_weight > 0 and cfg.backbone_trainable_blocks == 0:
+            raise ValueError("StableNight local feature stability requires a trainable backbone block")
+        if not isinstance(cfg.stable_dustbin_enabled, bool):
+            raise ValueError("stable_dustbin_enabled must be a boolean")
+        if not math.isfinite(cfg.stable_dustbin_gamma_max) or not 0 < cfg.stable_dustbin_gamma_init < cfg.stable_dustbin_gamma_max:
+            raise ValueError("StableNight dustbin gamma requires 0 < init < finite max")
+        if isinstance(cfg.stable_sinkhorn_iterations, bool) or not isinstance(cfg.stable_sinkhorn_iterations, int) or cfg.stable_sinkhorn_iterations < 1:
+            raise ValueError("StableNight Sinkhorn iterations must be a positive integer")
+        if cfg.stable_feature_fusion != "none":
+            raise ValueError("StableNight multi-layer fusion is deferred to stage two; use none")
     if config.vpr.model_family == "dino_mix":
         if config.vpr.backbone_name != "dinov2_vits14" or config.vpr.aggregator != "mixvpr" or config.vpr.descriptor_dim != 512:
             raise ValueError("DINO-Mix requires plain DINOv2-S, MixVPR and 512D")
@@ -342,7 +399,7 @@ def validate_config(config: ExperimentConfig) -> None:
         config.vpr.image_height, config.vpr.image_width
     ) != (322, 322):
         raise ValueError("Compact SALAD requires 322x322 input")
-    if config.vpr.train_domains not in {"day", "day_fake"}:
+    if config.vpr.model_family != "stable_night_salad" and config.vpr.train_domains not in {"day", "day_fake"}:
         raise ValueError("vpr.train_domains must be day or day_fake")
     if config.vpr.cross_domain_aux not in {"none", "cross_domain_relation"}:
         raise ValueError("cross_domain_aux must be none or cross_domain_relation")
@@ -388,7 +445,12 @@ def validate_config(config: ExperimentConfig) -> None:
         raise ValueError("Epoch-one drop threshold cannot be negative")
     if config.evaluation.protocol not in {"project", "paper"}:
         raise ValueError("evaluation.protocol must be project or paper")
-    if config.evaluation.database_domain != "day":
+    if config.vpr.model_family == "stable_night_salad":
+        if config.evaluation.database_domain not in {"day", "fake_night"}:
+            raise ValueError("StableNight database_domain must be day or fake_night")
+        if config.evaluation.database_domain == "fake_night" and not config.evaluation.fake_database_manifest:
+            raise ValueError("Fake Night Database requires an explicit fake_database_manifest")
+    elif config.evaluation.database_domain != "day":
         raise ValueError("The paper workflow evaluates against a daytime database")
     for value in (
         config.data.crop_size,

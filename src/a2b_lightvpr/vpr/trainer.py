@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import json
 import random
 import resource
 import time
@@ -17,6 +18,7 @@ from ..checkpointing import (
     atomic_torch_save,
     checkpoint_config_matches,
     data_fingerprints,
+    file_sha256,
     restore_rng_state,
     rng_state,
     write_json,
@@ -27,6 +29,7 @@ from ..data import (
     PKBalancedBatchSampler,
     PairedVPRDataset,
     RollingBalancedSampler,
+    StableNightVPRDataset,
 )
 from ..evaluation import evaluate_model
 from ..transforms import VPRTransform
@@ -39,6 +42,8 @@ from .losses import (
 from .model import build_descriptor_model, resolve_initial_checkpoint
 from .neighborhood import DatasetNeighborhoodQueue
 from .teacher_cache import TeacherDescriptorCache
+from .salad import DINOv2SALADBackbone
+from .stable_night import stable_night_batch_loss
 
 
 def _set_random_state(seed: int) -> None:
@@ -248,6 +253,7 @@ def export_vpr_inference_checkpoint(
 
 def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> Path:
     cfg = config.vpr
+    stable_night = cfg.model_family == "stable_night_salad"
     _set_random_state(cfg.random_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     output_dir = Path(cfg.output_dir)
@@ -255,22 +261,32 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
     write_json(config.as_dict(), output_dir / "resolved_config.json")
     transform = VPRTransform(cfg.image_height, cfg.image_width)
     generated_manifest = Path(config.data.generated_root) / "manifest.csv"
+    training_manifest = generated_manifest
+    if stable_night and cfg.train_domains in {"day_only", "day_aug"}:
+        training_manifest = Path(config.data.vpr_source_manifest)
+        generated_manifest = None
     teacher_cache = (
         TeacherDescriptorCache(config, generated_manifest)
         if cfg.cross_domain_aux == "cross_domain_relation"
         and cfg.relation_teacher in {"salad", "boq"}
         else None
     )
-    dataset = PairedVPRDataset(
-        generated_manifest,
-        transform,
+    dataset_kwargs = dict(
         min_class_images=cfg.min_class_images,
         min_class_images_by_dataset=cfg.min_class_images_by_dataset,
         dataset_sampling_weights=cfg.dataset_sampling_weights,
         datasets=cfg.datasets,
-        teacher_cache=teacher_cache,
-        include_fake=cfg.train_domains == "day_fake",
     )
+    if stable_night:
+        dataset = StableNightVPRDataset(
+            training_manifest, transform, train_domains=cfg.train_domains,
+            random_seed=cfg.random_seed, **dataset_kwargs
+        )
+    else:
+        dataset = PairedVPRDataset(
+            training_manifest, transform, teacher_cache=teacher_cache,
+            include_fake=cfg.train_domains == "day_fake", **dataset_kwargs
+        )
     if cfg.sampler == "pk_balanced":
         sampler = PKBalancedBatchSampler(
             dataset.rows,
@@ -294,6 +310,12 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         )
 
     initial_checkpoint = resolve_initial_checkpoint(cfg.init_checkpoint, cfg.descriptor_dim)
+    stable_model_kwargs = {
+        "stable_dustbin_enabled": cfg.stable_dustbin_enabled,
+        "stable_dustbin_gamma_init": cfg.stable_dustbin_gamma_init,
+        "stable_dustbin_gamma_max": cfg.stable_dustbin_gamma_max,
+        "stable_sinkhorn_iterations": cfg.stable_sinkhorn_iterations,
+    } if stable_night else {}
     model = build_descriptor_model(
         cfg.aggregator,
         image_height=cfg.image_height,
@@ -308,12 +330,30 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         backbone_checkpoint=cfg.backbone_checkpoint,
         backbone_trainable_blocks=cfg.backbone_trainable_blocks,
         aggregator_repo=cfg.aggregator_repo,
+        **stable_model_kwargs,
     ).to(device)
     classifier_device = torch.device("cpu") if cfg.classifier_cpu_offload else device
-    classifier = MarginCosineClassifier(
-        cfg.descriptor_dim, len(dataset.place_to_label)
+    classifier = (
+        nn.Identity() if stable_night else MarginCosineClassifier(
+            cfg.descriptor_dim, len(dataset.place_to_label)
+        )
     ).to(classifier_device)
     optimizer = build_vpr_optimizer(model, classifier, cfg)
+    reference_backbone = None
+    if stable_night and (
+        cfg.stable_stability_weight > 0
+        or (cfg.stable_reliability_weight > 0 and cfg.stable_reliability_target == "augmentation")
+    ):
+        reference_backbone = DINOv2SALADBackbone(
+            cfg.backbone_repo, cfg.backbone_name, cfg.backbone_checkpoint, trainable_blocks=0
+        ).eval().to(device)
+        reference_backbone.requires_grad_(False)
+    training_reference_fingerprint = teacher_cache.fingerprint if teacher_cache is not None else ""
+    if reference_backbone is not None:
+        training_reference_fingerprint = "stable_reference:" + file_sha256(cfg.backbone_checkpoint)
+    metrics_path = output_dir / "training_metrics.jsonl"
+    if stable_night and not cfg.resume:
+        metrics_path.write_text("", encoding="utf-8")
 
     loader_kwargs = {
         "num_workers": cfg.workers,
@@ -361,8 +401,9 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         stale_epochs = int(state.get("stale_epochs", 0))
         saved_optimizer_step = int(state.get("optimizer_step", 0))
         samples_seen = int(state.get("samples_seen", start_epoch * cfg.samples_per_epoch))
-        cache_fingerprint = teacher_cache.fingerprint if teacher_cache is not None else ""
-        if state.get("teacher_cache_fingerprint", "") != cache_fingerprint:
+        if state.get("teacher_cache_fingerprint", "") != training_reference_fingerprint:
+            if stable_night:
+                raise ValueError("VPR resume frozen reference does not match the current reference")
             raise ValueError("VPR resume teacher cache does not match the current cache")
         if state.get("sampler_state") is not None:
             if not hasattr(sampler, "load_state_dict"):
@@ -401,6 +442,8 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
 
     completed_epochs = start_epoch
     for epoch in range(start_epoch, epochs):
+        if stable_night and hasattr(dataset, "set_epoch"):
+            dataset.set_epoch(epoch)
         if isinstance(sampler, (CoverageBalancedSampler, RollingBalancedSampler, PKBalancedBatchSampler)):
             sampler.set_epoch(epoch)
         model.train()
@@ -418,6 +461,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         epoch_start = time.perf_counter()
         data_wait_start = epoch_start
         optimizer.zero_grad(set_to_none=True)
+        component_totals: dict[str, float] = {}
         progress = tqdm(loader, desc=f"vpr/{cfg.model_family}/{cfg.aggregator} epoch {epoch + 1}")
         for batch_index, batch in enumerate(progress):
             batch_ready = time.perf_counter()
@@ -426,7 +470,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             day = batch["day"].to(device, non_blocking=True)
             fake = (
                 batch["fake"].to(device, non_blocking=True)
-                if cfg.train_domains == "day_fake"
+                if cfg.train_domains in {"day_fake", "day_aug_fake"}
                 else None
             )
             labels = batch["label"].to(device, non_blocking=True)
@@ -436,20 +480,34 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             if cfg.cross_domain_aux == "cross_domain_relation" and len(batch_datasets) != 1:
                 raise RuntimeError("CDND requires every mini-batch to contain one dataset")
             with torch.autocast(device.type, enabled=use_amp):
-                day_descriptor = model.encode(day)
-                fake_descriptor = model.encode(fake) if fake is not None else None
-                if "teacher_descriptor" in batch:
-                    teacher_day = batch["teacher_descriptor"].to(device, non_blocking=True)
-                else:
-                    teacher_day = None
-                if fake_descriptor is None:
-                    loss, components = day_classification_loss(
-                        day_descriptor, labels, classifier
+                if stable_night:
+                    view_images = {"day": day}
+                    view_masks = {"day": batch["day_valid_mask"].to(device, non_blocking=True)}
+                    if "aug" in batch:
+                        view_images["aug"] = batch["aug"].to(device, non_blocking=True)
+                        view_masks["aug"] = view_masks["day"]
+                    if fake is not None:
+                        view_images["fake"] = fake
+                        view_masks["fake"] = batch["fake_valid_mask"].to(device, non_blocking=True)
+                    loss, components, reference_images = stable_night_batch_loss(
+                        model, view_images, view_masks, labels, image_keys, cfg, reference_backbone
                     )
+                    teacher_images += reference_images
                 else:
-                    loss, components = day_fake_classification_loss(
-                        day_descriptor, fake_descriptor, labels, classifier
-                    )
+                    day_descriptor = model.encode(day)
+                    fake_descriptor = model.encode(fake) if fake is not None else None
+                    if "teacher_descriptor" in batch:
+                        teacher_day = batch["teacher_descriptor"].to(device, non_blocking=True)
+                    else:
+                        teacher_day = None
+                    if fake_descriptor is None:
+                        loss, components = day_classification_loss(
+                            day_descriptor, labels, classifier
+                        )
+                    else:
+                        loss, components = day_fake_classification_loss(
+                            day_descriptor, fake_descriptor, labels, classifier
+                        )
                 if cfg.cross_domain_aux == "cross_domain_relation":
                     if teacher_day is None or day_descriptor is None or fake_descriptor is None:
                         raise RuntimeError("CDND requires teacher, day, and fake descriptors")
@@ -515,7 +573,12 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             batch_samples = int(day.shape[0])
             epoch_samples += batch_samples
             samples_seen += batch_samples
-            encoded_student_images += batch_samples * (2 if fake is not None else 1)
+            encoded_student_images += batch_samples * (
+                len(view_images) if stable_night else (2 if fake is not None else 1)
+            )
+            if stable_night:
+                for name, value in components.items():
+                    component_totals[name] = component_totals.get(name, 0.0) + float(value.detach().item())
             running += float(loss.item())
             step_time += time.perf_counter() - step_start
             elapsed = max(time.perf_counter() - epoch_start, 1e-9)
@@ -560,7 +623,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             scheduler,
             scaler,
             generated_manifest,
-            teacher_cache.fingerprint if teacher_cache is not None else "",
+            training_reference_fingerprint,
             global_step,
             samples_seen,
             sampler.state_dict() if hasattr(sampler, "state_dict") else None,
@@ -576,6 +639,23 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             )
 
         completed_epochs = epoch + 1
+        if stable_night:
+            epoch_metrics = {
+                "epoch": completed_epochs,
+                "train_domains": cfg.train_domains,
+                "components_mean": {
+                    name: total / max(1, len(loader)) for name, total in component_totals.items()
+                },
+                "samples": epoch_samples,
+                "student_images": encoded_student_images,
+                "reference_images": teacher_images,
+                "optimizer_steps": epoch_optimizer_steps,
+                "learning_rates": current_lrs,
+                "validation_recall1": None if cfg.selection_rule == "fixed_budget_last" else score,
+                "elapsed_seconds": epoch_elapsed,
+            }
+            with metrics_path.open("a", encoding="utf-8") as metrics_file:
+                metrics_file.write(json.dumps(epoch_metrics, sort_keys=True) + "\n")
         if (
             epoch == 0
             and epoch_zero_score >= 0

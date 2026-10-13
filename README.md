@@ -1,6 +1,6 @@
 # A2B-LightVPR
 
-用于昼夜视觉地点识别的研究项目：QS-Attn 离线生成 fake-night 图像，SALAD 教师通过 CDND 监督轻量 MixVPR 学生；RobotCar 支持推理阶段的时序重排 TCR。部署 checkpoint 只包含学生模型。
+用于昼夜视觉地点识别的研究项目：QS-Attn 离线生成 fake-night 图像，SALAD 教师通过 CDND 监督轻量 MixVPR 学生。部署 checkpoint 只包含学生模型。
 
 ## 目录
 
@@ -16,7 +16,7 @@ configs/
 scripts/
 ├── data/                      # 数据准备、校验和 manifest 合并
 ├── train/                     # 主实验、多种子与组件消融
-├── evaluate/                  # 单帧评测、同权重评测和 TCR
+├── evaluate/                  # 单帧评测与同权重评测
 ├── experiments/               # 扩展实验工作流
 ├── references/                # 参考模型训练、PCA 和词典拟合
 ├── benchmark/                 # 延迟与资源测量
@@ -27,7 +27,7 @@ src/a2b_lightvpr/
 ├── references/                # 参考模型加载、训练、拟合与评测
 ├── reporting/                 # 单种子、多种子、配对实验汇总与绘图
 ├── qualitative/               # 定性样本搜索与图片导出
-└── *.py                       # CLI、配置、数据、检索指标、运行与 TCR
+└── *.py                       # CLI、配置、数据、检索指标、模型运行
 tests/                        # 单元测试与可选本地资源检查
 docs/                         # 工作流、论文草稿与整理记录
 data/                         # 本地数据、生成图像与缓存（不入 Git）
@@ -54,7 +54,6 @@ YAML 中的外部数据集、第三方仓库和权重路径沿用原研究机路
 |---|---|
 | 完整主实验 | `fish scripts/train/run_main_seed0.fish` |
 | 512 维多种子与消融 | `fish scripts/train/run_paper_experiments_512.fish` |
-| RobotCar 时序评测 | `fish scripts/evaluate/run_robotcar_temporal_512.fish` |
 | RobotCar 单数据集消融 | `fish scripts/experiments/run_robotcar_only.fish all` |
 | SVOX / MSLS 单数据集消融 | `fish scripts/experiments/run_single_dataset_cdnd.fish svox`（或 `msls`） |
 | 参考模型补充评测 | `fish scripts/references/run_reference_completion.fish` |

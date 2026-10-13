@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch import nn
 from torchvision import models
 
-from .salad import SALADStudentModel
+from .salad import SALADStudentModel, StableNightSALADModel
 
 
 class GeM(nn.Module):
@@ -176,7 +176,32 @@ def build_descriptor_model(
     backbone_checkpoint: str = "",
     backbone_trainable_blocks: int = 0,
     aggregator_repo: str = "",
+    stable_dustbin_enabled: bool = True,
+    stable_dustbin_gamma_init: float = 1.0,
+    stable_dustbin_gamma_max: float = 4.0,
+    stable_sinkhorn_iterations: int = 20,
 ) -> nn.Module:
+    if model_family == "stable_night_salad":
+        if (image_height, image_width) != (322, 322) or aggregator_name != "salad" or descriptor_dim != 544:
+            raise ValueError("StableNight-SALAD requires SALAD, 544D, and 322x322 input")
+        if backbone_name not in {"dinov2_vits14", "dinov2_vits14_reg"}:
+            raise ValueError("StableNight-SALAD requires a DINOv2-S/14 backbone")
+        model = StableNightSALADModel(
+            backbone_repo, backbone_name, backbone_checkpoint, backbone_trainable_blocks,
+            dustbin_enabled=stable_dustbin_enabled,
+            gamma_init=stable_dustbin_gamma_init,
+            gamma_max=stable_dustbin_gamma_max,
+            sinkhorn_iterations=stable_sinkhorn_iterations,
+        )
+        if init_checkpoint:
+            # A Compact SALAD-S checkpoint can initialize all existing modules;
+            # only the newly introduced reliability parameters may be absent.
+            result = model.load_state_dict(_checkpoint_state(init_checkpoint), strict=False)
+            new_keys = {"aggregator.gamma_logit", "aggregator.gamma_max", "aggregator._extra_state"}
+            new_keys.update(k for k in model.state_dict() if k.startswith("aggregator.reliability_predictor."))
+            if result.unexpected_keys or set(result.missing_keys) - new_keys:
+                raise ValueError(f"StableNight initial checkpoint mismatch: {result}")
+        return model
     if model_family == "dino_mix":
         from .dino_mix import DINOMixStudent
         if aggregator_name != "mixvpr" or descriptor_dim != 512 or (image_height, image_width) != (322, 322):

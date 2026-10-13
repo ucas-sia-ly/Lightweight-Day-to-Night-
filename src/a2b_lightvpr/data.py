@@ -15,7 +15,7 @@ from PIL import Image
 from torch.utils.data import Dataset, Sampler
 
 from .config import DataConfig
-from .transforms import GeneratorTrainTransform, VPRTransform
+from .transforms import GeneratorTrainTransform, PhotometricVPR, VPRTransform, patch_valid_mask
 
 FIXED_RANDOM_STATE = 0
 
@@ -210,7 +210,7 @@ class PairedVPRDataset(Dataset):
         teacher_cache=None,
         include_fake: bool = True,
     ):
-        rows = read_generated_manifest(manifest)
+        rows = self._read_manifest(manifest)
         for manifest_index, row in enumerate(rows):
             row["manifest_index"] = manifest_index
         included = set(datasets or ())
@@ -243,12 +243,26 @@ class PairedVPRDataset(Dataset):
     def __len__(self) -> int:
         return len(self.rows)
 
+    def _read_manifest(self, manifest: str | Path) -> list[dict[str, str]]:
+        return read_generated_manifest(manifest)
+
     def __getitem__(self, index: int) -> dict:
         row = self.rows[index]
         with Image.open(row["source_path"]) as day_file:
             day = self.transform(day_file)
-        sample = {
-            "day": day,
+        sample = {"day": day, **self._sample_metadata(index)}
+        if self.include_fake:
+            with Image.open(row["generated_path"]) as fake_file:
+                sample["fake"] = self.transform(fake_file)
+        if self.teacher_cache is not None:
+            sample["teacher_descriptor"] = self.teacher_cache.descriptor(
+                row["manifest_index"], row["image_id"]
+            )
+        return sample
+
+    def _sample_metadata(self, index: int) -> dict:
+        row = self.rows[index]
+        return {
             "label": torch.tensor(self.place_to_label[row["global_place_id"]], dtype=torch.long),
             "image_id": row["image_id"],
             "image_key": torch.tensor(
@@ -268,14 +282,6 @@ class PairedVPRDataset(Dataset):
             ),
             "yaw_deg": torch.tensor(optional_float(row.get("yaw")), dtype=torch.float32),
         }
-        if self.include_fake:
-            with Image.open(row["generated_path"]) as fake_file:
-                sample["fake"] = self.transform(fake_file)
-        if self.teacher_cache is not None:
-            sample["teacher_descriptor"] = self.teacher_cache.descriptor(
-                row["manifest_index"], row["image_id"]
-            )
-        return sample
 
     def balanced_weights(self) -> torch.Tensor:
         """Equal total probability per dataset, then per place within a dataset."""
@@ -301,6 +307,126 @@ class PairedVPRDataset(Dataset):
                 / (len(dataset_places[dataset]) * place_counts[row["global_place_id"]])
             )
         return torch.tensor(weights, dtype=torch.double)
+
+
+class StableNightVPRDataset(PairedVPRDataset):
+    """Source-distinct place supervision with optional appearance-only views.
+
+    Source-only modes consume the original VPR source manifest and never access
+    generated images. Fake modes consume a generated manifest. Duplicate source
+    images (including outputs from multiple generators) count only once before
+    place filtering; the first compatible row supplies the fake view. Geometry
+    masks mark padding, and deliberately make no Day/Fake alignment claim.
+
+    Augmentation depends only on the configured seed, canonical source and epoch.
+    Repeated source images within an epoch share one augmented view. The epoch
+    tensor is shared with persistent workers so resumed runs reproduce these views.
+    """
+
+    MODES = {"day_only", "day_aug", "day_fake", "day_aug_fake"}
+
+    def __init__(
+        self,
+        manifest: str | Path,
+        transform: VPRTransform,
+        min_class_images: int = 4,
+        min_class_images_by_dataset: dict[str, int] | None = None,
+        dataset_sampling_weights: dict[str, float] | None = None,
+        datasets: tuple[str, ...] | None = None,
+        train_domains: str = "day_only",
+        random_seed: int = FIXED_RANDOM_STATE,
+    ):
+        if train_domains not in self.MODES:
+            raise ValueError(f"StableNight train_domains must be one of {sorted(self.MODES)}")
+        if isinstance(random_seed, bool) or not isinstance(random_seed, int) or random_seed < 0:
+            raise ValueError("StableNight random_seed must be a non-negative integer")
+        self.train_domains = train_domains
+        self.random_seed = random_seed
+        self._epoch = torch.zeros((), dtype=torch.int64).share_memory_()
+        self._stable_datasets = set(datasets or ())
+        self.augmentation = PhotometricVPR()
+        super().__init__(
+            manifest,
+            transform,
+            min_class_images=min_class_images,
+            min_class_images_by_dataset=min_class_images_by_dataset,
+            dataset_sampling_weights=dataset_sampling_weights,
+            datasets=datasets,
+            include_fake=train_domains in {"day_fake", "day_aug_fake"},
+        )
+
+    def set_epoch(self, epoch: int) -> None:
+        if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+            raise ValueError("StableNight epoch must be a non-negative integer")
+        self._epoch.fill_(epoch)
+
+    def _augmentation_seed(self, source_key: int) -> int:
+        identity = f"{self.random_seed}:{source_key}:{int(self._epoch.item())}"
+        return int.from_bytes(hashlib.sha256(identity.encode("utf-8")).digest()[:8], "big") % (2**63 - 1)
+
+    def _read_manifest(self, manifest: str | Path) -> list[dict[str, str]]:
+        rows = read_generated_manifest(manifest)
+        unique: dict[tuple[str, str], dict] = {}
+        generated: dict[str, tuple[tuple[str, str], str]] = {}
+        fake_mode = self.train_domains in {"day_fake", "day_aug_fake"}
+        for row in rows:
+            dataset = row.get("dataset", "unknown")
+            if self._stable_datasets and dataset not in self._stable_datasets:
+                continue
+            missing = [key for key in ("source_path", "place_id", "image_id", "split") if not row.get(key)]
+            if missing:
+                raise ValueError(f"StableNight manifest row is missing {', '.join(missing)}")
+            # Resolve aliases/symlinks using the same working-directory convention
+            # as the original dataset. The generator's image ID is not identity.
+            row["source_path"] = str(Path(row["source_path"]).expanduser().resolve())
+            source_key = (dataset, row["source_path"])
+            if fake_mode:
+                if not row.get("generated_path"):
+                    raise ValueError("StableNight fake modes require generated_path")
+                row["generated_path"] = str(Path(row["generated_path"]).expanduser().resolve())
+                fake_path = row["generated_path"]
+                generator_hash = row.get("generator_sha256", "")
+                if fake_path in generated:
+                    previous_source, previous_hash = generated[fake_path]
+                    if previous_source != source_key:
+                        raise ValueError("A generated image cannot represent multiple source images")
+                    if previous_hash and generator_hash and previous_hash != generator_hash:
+                        raise ValueError("Conflicting generator hashes for the same generated image")
+                    generator_hash = generator_hash or previous_hash
+                generated[fake_path] = (source_key, generator_hash)
+            if source_key in unique:
+                previous = unique[source_key]
+                if any(previous[key] != row[key] for key in ("place_id", "split")):
+                    raise ValueError("The same source image has conflicting place labels or splits")
+                continue
+            unique[source_key] = row
+        return list(unique.values())
+
+    def __getitem__(self, index: int) -> dict:
+        row = self.rows[index]
+        with Image.open(row["source_path"]) as day_file:
+            day, day_valid_pixels = self.transform.transform_with_mask(day_file, patch_size=None)
+        sample = {"day": day, **self._sample_metadata(index)}
+        sample["image_key"] = torch.tensor(
+            int(hashlib.sha1(
+                f'{row.get("dataset", "unknown")}:{row["source_path"]}'.encode("utf-8")
+            ).hexdigest()[:15], 16),
+            dtype=torch.long,
+        )
+        sample["day_valid_mask"] = patch_valid_mask(day_valid_pixels)
+        if self.train_domains in {"day_aug", "day_aug_fake"}:
+            augmentation_seed = self._augmentation_seed(int(sample["image_key"].item()))
+            sample["aug"] = self.augmentation(
+                day, day_valid_pixels,
+                rng=random.Random(augmentation_seed),
+                torch_generator=torch.Generator(device=day.device).manual_seed(augmentation_seed),
+            )
+        if self.include_fake:
+            with Image.open(row["generated_path"]) as fake_file:
+                fake, fake_valid_mask = self.transform.transform_with_mask(fake_file)
+            sample["fake"] = fake
+            sample["fake_valid_mask"] = fake_valid_mask
+        return sample
 
 
 class PKBalancedBatchSampler(Sampler[list[int]]):

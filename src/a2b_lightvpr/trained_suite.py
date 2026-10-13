@@ -7,6 +7,7 @@ import torch
 
 from .checkpointing import file_sha256, write_json
 from .config import ExperimentConfig
+from .evaluation import resolve_database_domain
 from .references.models import (
     evaluate_dual_encoder,
     evaluation_fingerprint,
@@ -52,7 +53,8 @@ def expand_suite_datasets(datasets: tuple[str, ...]):
 
 def _evaluation_rows(config: ExperimentConfig, dataset: str, split: str):
     database, queries = suite_rows(config, dataset, split)
-    return database, queries, ""
+    database, digest = resolve_database_domain(database, config.evaluation, split, queries)
+    return database, queries, digest
 
 
 def _suite_summary_values(payload: dict, selected: tuple[str, ...]) -> dict:
@@ -100,10 +102,30 @@ def evaluate_trained_suite(
         raise ValueError(f"Unknown trained-suite datasets: {unknown}")
     checkpoint_path = Path(checkpoint).expanduser()
     output_dir = Path(config.vpr.output_dir) / "final_suite"
+    if config.evaluation.database_domain == "fake_night":
+        output_dir = output_dir / "fake_night"
     summary_path = output_dir / "summary.json"
     checkpoint_sha256 = file_sha256(checkpoint_path)
-    manifest_sha256 = file_sha256(Path(config.data.generated_root) / "manifest.csv")
-    database_manifest_sha256 = {}
+    source_only = config.vpr.model_family == "stable_night_salad" and config.vpr.train_domains in {"day_only", "day_aug"}
+    training_manifest = Path(config.data.vpr_source_manifest) if source_only else Path(config.data.generated_root) / "manifest.csv"
+    manifest_sha256 = file_sha256(training_manifest)
+    database_manifest_sha256 = (
+        {"fake_database_manifest": file_sha256(config.evaluation.fake_database_manifest)}
+        if config.evaluation.database_domain == "fake_night" else {}
+    )
+    stable_night = config.vpr.model_family == "stable_night_salad"
+    stable_head_options = {
+        "version": 1,
+        "dustbin_enabled": config.vpr.stable_dustbin_enabled,
+        "gamma_max": config.vpr.stable_dustbin_gamma_max,
+        "sinkhorn_iterations": config.vpr.stable_sinkhorn_iterations,
+    } if stable_night else {}
+    if stable_night:
+        initialization_checkpoint = config.vpr.init_checkpoint or config.vpr.backbone_checkpoint
+    elif config.vpr.model_family in {"salad", "dino_mix"}:
+        initialization_checkpoint = config.vpr.backbone_checkpoint
+    else:
+        initialization_checkpoint = config.vpr.init_checkpoint
     cached_payload = None
     if summary_path.is_file():
         cached = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -120,6 +142,10 @@ def evaluate_trained_suite(
                 config.vpr.image_height, config.vpr.image_width
             ]
             and cached.get("random_seed", 0) == config.vpr.random_seed
+            and (not stable_night or (
+                cached.get("stable_head_options") == stable_head_options
+                and cached.get("evaluation_recalls") == list(config.evaluation.recalls)
+            ))
         )
         if cache_matches:
             changed = False
@@ -156,6 +182,12 @@ def evaluate_trained_suite(
                     metrics.get("query_protocol_fingerprint") != query_fingerprint
                     or metrics.get("evaluation_fingerprint") != eval_fingerprint
                 ):
+                    if stable_night:
+                        # Changed Query/DB rows or positive protocol invalidate
+                        # recalls; never relabel stale measurements as current.
+                        del cached["datasets"][name]
+                        changed = True
+                        continue
                     metrics["query_protocol_fingerprint"] = query_fingerprint
                     metrics["evaluation_fingerprint"] = eval_fingerprint
                     metrics["protocol_fingerprint"] = query_fingerprint
@@ -179,11 +211,7 @@ def evaluate_trained_suite(
         "database_manifest_sha256": database_manifest_sha256,
         "checkpoint_epoch": int(state.get("epoch", 0)),
         "model_family": config.vpr.model_family,
-        "initialization": (
-            config.vpr.backbone_checkpoint
-            if config.vpr.model_family in {"salad", "dino_mix"}
-            else config.vpr.init_checkpoint or "torchvision_imagenet"
-        ),
+        "initialization": initialization_checkpoint or "torchvision_imagenet",
         "encoder": config.vpr.model_family,
         "aggregator": config.vpr.aggregator,
         "descriptor_dim": config.vpr.descriptor_dim,
@@ -198,13 +226,10 @@ def evaluate_trained_suite(
             "relation_queue_scope": config.vpr.relation_queue_scope,
         },
         "input_size": [config.vpr.image_height, config.vpr.image_width],
+        "stable_head_options": stable_head_options,
+        "evaluation_recalls": list(config.evaluation.recalls),
         "datasets": {},
     }
-    initialization_checkpoint = (
-        config.vpr.backbone_checkpoint
-        if config.vpr.model_family in {"salad", "dino_mix"}
-        else config.vpr.init_checkpoint
-    )
     if initialization_checkpoint:
         initial_checkpoint = Path(resolve_initial_checkpoint(
             initialization_checkpoint, config.vpr.descriptor_dim

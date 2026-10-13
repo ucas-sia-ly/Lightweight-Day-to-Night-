@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
@@ -12,19 +13,37 @@ def _log_sinkhorn(
     z: torch.Tensor,
     log_mu: torch.Tensor,
     log_nu: torch.Tensor,
+    iterations: int = 3,
 ) -> torch.Tensor:
     u, v = torch.zeros_like(log_mu), torch.zeros_like(log_nu)
-    for _ in range(3):
+    for _ in range(iterations):
         u = log_mu - torch.logsumexp(z + v.unsqueeze(1), dim=2)
         v = log_nu - torch.logsumexp(z + u.unsqueeze(2), dim=1)
     return z + u.unsqueeze(2) + v.unsqueeze(1)
 
 
-def _optimal_transport(scores: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
+def _optimal_transport(
+    scores: torch.Tensor, alpha: torch.Tensor, *, iterations: int = 3
+) -> torch.Tensor:
+    """SALAD transport with scalar or per-patch dustbin logits.
+
+    Keep the original three-iteration/dtype path by default. The reliable head
+    explicitly requests FP32 and more iterations. Marginals fix cluster mass to
+    one each and dustbin mass to patches - clusters, irrespective of logits.
+    """
     batch, clusters, patches = scores.shape
+    if patches <= clusters:
+        raise ValueError("SALAD transport requires more patches than clusters")
+    if iterations < 1:
+        raise ValueError("Sinkhorn iterations must be positive")
     one = scores.new_tensor(1)
     m, n = clusters * one, patches * one
-    bins = alpha.expand(batch, 1, patches)
+    if alpha.ndim == 2:
+        alpha = alpha.unsqueeze(1)
+    try:
+        bins = alpha.expand(batch, 1, patches)
+    except RuntimeError as error:
+        raise ValueError("Dustbin logits must be scalar, [P], [B,P], or [B,1,P]") from error
     couplings = torch.cat((scores, bins), dim=1)
     norm = -(m + n).log()
     log_mu = torch.cat((norm.expand(clusters), (n - m).log()[None] + norm))
@@ -33,6 +52,7 @@ def _optimal_transport(scores: torch.Tensor, alpha: torch.Tensor) -> torch.Tenso
         couplings,
         log_mu[None].expand(batch, -1),
         log_nu[None].expand(batch, -1),
+        iterations,
     ) - norm
 
 
@@ -83,6 +103,93 @@ class CompactSALADHead(nn.Module):
             dim=-1,
         )
         return F.normalize(descriptor, dim=-1)
+
+
+class ReliableSALADHead(CompactSALADHead):
+    """Compact SALAD plus a lightweight, opt-in patch reliability branch.
+
+    Dynamic logits redistribute the fixed dustbin capacity; they do not change
+    it. Normalizing each real cluster in log space keeps its aggregation mass
+    nonzero even under a poorly converged or extreme transport solution.
+    """
+
+    def __init__(
+        self,
+        num_channels: int,
+        *,
+        dustbin_enabled: bool = True,
+        gamma_init: float = 1.0,
+        gamma_max: float = 4.0,
+        sinkhorn_iterations: int = 20,
+    ):
+        super().__init__(num_channels)
+        if not math.isfinite(gamma_max) or not 0 < gamma_init < gamma_max:
+            raise ValueError("Dustbin gamma requires 0 < gamma_init < finite gamma_max")
+        if sinkhorn_iterations < 1:
+            raise ValueError("Sinkhorn iterations must be positive")
+        self.dustbin_enabled = bool(dustbin_enabled)
+        self.sinkhorn_iterations = int(sinkhorn_iterations)
+        self._gamma_max_setting = float(gamma_max)
+        self.register_buffer("gamma_max", torch.tensor(float(gamma_max)))
+        self.gamma_logit = nn.Parameter(torch.tensor(math.log(gamma_init / (gamma_max - gamma_init))))
+        self.reliability_predictor = nn.Sequential(
+            nn.LayerNorm(num_channels),
+            nn.Linear(num_channels, 32),
+            nn.GELU(),
+            nn.Linear(32, 1),
+        )
+
+    @property
+    def gamma(self) -> torch.Tensor:
+        return self.gamma_max * self.gamma_logit.sigmoid()
+
+    def get_extra_state(self):
+        # These settings affect retrieval but are not trainable tensors. Persist
+        # them inside model state so export and strict loading preserve behavior.
+        return {
+            "version": 1,
+            "dustbin_enabled": self.dustbin_enabled,
+            "gamma_max": self._gamma_max_setting,
+            "sinkhorn_iterations": self.sinkhorn_iterations,
+        }
+
+    def set_extra_state(self, state):
+        if state != self.get_extra_state():
+            raise ValueError("StableNight head settings do not match the checkpoint")
+
+    def forward(
+        self,
+        value: tuple[torch.Tensor, torch.Tensor],
+        *,
+        return_aux: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        features, token = value
+        reliability = self.reliability_predictor(features.flatten(2).transpose(1, 2)).squeeze(-1).sigmoid()
+        local = self.cluster_features(features).flatten(2)
+        scores = self.score(features).flatten(2)
+        token = self.token_features(token)
+        # AMP must not lower the precision of logsumexp or weighted aggregation.
+        with torch.autocast(device_type=features.device.type, enabled=False):
+            bins = self.dust_bin.float()
+            if self.dustbin_enabled:
+                bins = bins + self.gamma.float() * (1.0 - reliability.float())
+            log_assignment = _optimal_transport(
+                scores.float(), bins, iterations=self.sinkhorn_iterations
+            )
+            cluster_weights = log_assignment[:, :-1].softmax(dim=-1)
+            aggregated = torch.einsum("bcp,bkp->bck", local.float(), cluster_weights)
+            descriptor = F.normalize(torch.cat((
+                F.normalize(token.float(), dim=-1),
+                F.normalize(aggregated, dim=1).flatten(1),
+            ), dim=-1), dim=-1)
+        if not return_aux:
+            return descriptor
+        return descriptor, {
+            "reliability": reliability,
+            "dustbin_assignment": log_assignment[:, -1].exp(),
+            "cluster_mass": log_assignment[:, :-1].exp().sum(dim=-1),
+            "local_features": features,
+        }
 
 
 def _checkpoint_state(path: str | Path) -> dict[str, torch.Tensor]:
@@ -177,3 +284,17 @@ class SALADStudentModel(nn.Module):
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         return self.encode(images)
+
+
+class StableNightSALADModel(SALADStudentModel):
+    """Stage-one StableNight-SALAD; reference teachers live only in training."""
+
+    def __init__(
+        self, repo: str, model_name: str, checkpoint: str,
+        trainable_blocks: int = 0, **head_options,
+    ):
+        super().__init__(repo, model_name, checkpoint, trainable_blocks)
+        self.aggregator = ReliableSALADHead(self.backbone.num_channels, **head_options)
+
+    def encode_with_aux(self, images: torch.Tensor):
+        return self.aggregator(self.backbone(images), return_aux=True)

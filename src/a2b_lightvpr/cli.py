@@ -21,11 +21,6 @@ from .references.models import (
 from .references.coverage import audit_reference_coverage
 from .references.pca import fit_reference_pca
 from .references.suite import evaluate_reference_suite
-from .robotcar_temporal import (
-    evaluate_robotcar_temporal,
-    select_robotcar_temporal,
-    summarize_robotcar_temporal,
-)
 from .runtime import benchmark_model
 from .reporting.seed0_summary import summarize_cdnd_seed0
 from .references.training import fit_anyloc_small_vocabulary, train_boq_small
@@ -179,26 +174,6 @@ def _parser() -> argparse.ArgumentParser:
     reference.add_argument("--batch-size", type=int, default=0)
     reference.add_argument("--allow-batch-dependent", action="store_true")
 
-    temporal_select = common("select-robotcar-temporal")
-    temporal_select.add_argument("--checkpoint", required=True)
-    temporal_select.add_argument("--cache", required=True)
-    temporal_select.add_argument("--output", required=True)
-    temporal_select.add_argument("--method", choices=["clustered-mgtr"], default="clustered-mgtr")
-    temporal_evaluate = common("evaluate-robotcar-temporal")
-    temporal_evaluate.add_argument("--checkpoint", required=True)
-    temporal_evaluate.add_argument("--selection", required=True)
-    temporal_evaluate.add_argument("--condition", choices=["night", "day"], required=True)
-    temporal_evaluate.add_argument("--cache", required=True)
-    temporal_evaluate.add_argument("--output", required=True)
-    temporal_evaluate.add_argument(
-        "--method", choices=["clustered-mgtr"], default="clustered-mgtr"
-    )
-    temporal_summary = commands.add_parser("summarize-robotcar-temporal")
-    for name in ("night", "day", "crica", "salad", "boq", "reference-resources", "output"):
-        temporal_summary.add_argument(f"--{name}", required=True)
-    temporal_summary.add_argument(
-        "--method", choices=["clustered-mgtr"], default="clustered-mgtr"
-    )
     qualitative = common("export-qualitative-top1")
     qualitative.add_argument("--selection", required=True)
     qualitative.add_argument("--search", action="store_true", help="Search all four night query sets and select examples automatically")
@@ -325,12 +300,6 @@ def main(argv=None) -> None:
             raise SystemExit(1)
         print(args.resources)
         return
-    if args.command == "summarize-robotcar-temporal":
-        print(summarize_robotcar_temporal(
-                args.night, args.day, args.crica, args.salad, args.boq, args.output,
-                args.reference_resources,
-            ))
-        return
     config = apply_overrides(load_config(args.config), args.set)
     if args.command == "audit-data":
         result = audit_data(config.data, decode=args.decode)
@@ -380,13 +349,6 @@ def main(argv=None) -> None:
             batch_size_override=args.batch_size or None,
             allow_batch_dependent=args.allow_batch_dependent,
         ))
-    elif args.command == "select-robotcar-temporal":
-        print(select_robotcar_temporal(config, args.checkpoint, args.output, args.cache, args.method))
-    elif args.command == "evaluate-robotcar-temporal":
-        print(evaluate_robotcar_temporal(
-                config, args.checkpoint, args.selection, args.condition,
-                args.output, args.cache, None, args.method,
-            ))
     elif args.command == "export-qualitative-top1":
         if args.search:
             from .qualitative.search import search_qualitative_top1

@@ -34,6 +34,14 @@ def checkpoint_config_matches(state: dict, config, sections: tuple[str, ...] | N
     saved_vpr.setdefault("backbone_repo", "")
     saved_vpr.setdefault("backbone_checkpoint", "")
     saved_vpr.setdefault("backbone_trainable_blocks", 0)
+    # New prototype controls have no effect on legacy model families. Migrate
+    # only their defaults so old baseline training states remain resumable.
+    from .config import VPRConfig
+    prototype_defaults = VPRConfig()
+    for name, value in vars(prototype_defaults).items():
+        if name.startswith("stable_"):
+            saved_vpr.setdefault(name, value)
+    saved.setdefault("evaluation", {}).setdefault("fake_database_manifest", "")
     def active_fields(candidate, reference):
         if isinstance(reference, dict):
             return {
