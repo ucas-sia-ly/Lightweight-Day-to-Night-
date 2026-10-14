@@ -9,6 +9,10 @@ from a2b_lightvpr.config import DataConfig, ExperimentConfig
 
 
 def test_suite_aliases_cover_active_conditions():
+    assert "tokyo247_night" in trained_suite.NIGHT_PROTOCOLS
+    assert "tokyo247_sunset" in trained_suite.NIGHT_PROTOCOLS
+    assert "tokyo247_day" in trained_suite.DAY_PROTOCOLS
+    assert not {"tokyo_night", "tokyo_sunset", "tokyo_day"} & set(trained_suite.SUITE_PROTOCOLS)
     assert trained_suite.expand_suite_datasets(("all",)) == trained_suite.NIGHT_PROTOCOLS
     assert trained_suite.expand_suite_datasets(("all-day",)) == trained_suite.DAY_PROTOCOLS
     assert trained_suite.expand_suite_datasets(("all-conditions",)) == (

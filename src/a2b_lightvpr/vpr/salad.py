@@ -57,6 +57,12 @@ def _optimal_transport(
 
 
 class CompactSALADHead(nn.Module):
+    """Compact form of serizba/salad's ``models/aggregators/salad.py``.
+
+    The upstream training recipe uses dropout=0.3. Default to zero to preserve
+    the existing project baseline; dropout adds no checkpoint parameters.
+    """
+
     output_dim = 544
 
     def __init__(
@@ -65,8 +71,11 @@ class CompactSALADHead(nn.Module):
         num_clusters: int = 16,
         cluster_dim: int = 32,
         token_dim: int = 32,
+        dropout: float = 0.0,
     ):
         super().__init__()
+        if not math.isfinite(dropout) or not 0.0 <= dropout <= 1.0:
+            raise ValueError("SALAD dropout must be finite and between zero and one")
         self.num_clusters = int(num_clusters)
         self.cluster_dim = int(cluster_dim)
         self.token_dim = int(token_dim)
@@ -75,13 +84,13 @@ class CompactSALADHead(nn.Module):
         )
         self.cluster_features = nn.Sequential(
             nn.Conv2d(num_channels, 512, 1),
-            nn.Identity(),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
             nn.ReLU(),
             nn.Conv2d(512, cluster_dim, 1),
         )
         self.score = nn.Sequential(
             nn.Conv2d(num_channels, 512, 1),
-            nn.Identity(),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
             nn.ReLU(),
             nn.Conv2d(512, num_clusters, 1),
         )
@@ -93,12 +102,19 @@ class CompactSALADHead(nn.Module):
         scores = self.score(features).flatten(2)
         token = self.token_features(token)
         assignments = torch.exp(_optimal_transport(scores, self.dust_bin))[:, :-1]
-        assignments = assignments.unsqueeze(1).repeat(1, self.cluster_dim, 1, 1)
-        local = local.unsqueeze(2).repeat(1, 1, self.num_clusters, 1)
+        # Equivalent to upstream repeat/multiply/sum without the [B,C,K,P]
+        # intermediates, which become expensive for larger metric batches.
+        # Preserve multiply's dtype promotion under AMP rather than allowing
+        # autocast to lower a FP32 transport solution inside the contraction.
+        aggregation_dtype = torch.promote_types(local.dtype, assignments.dtype)
+        with torch.autocast(device_type=features.device.type, enabled=False):
+            aggregated = torch.einsum(
+                "bcp,bkp->bck", local.to(aggregation_dtype), assignments.to(aggregation_dtype)
+            )
         descriptor = torch.cat(
             (
                 F.normalize(token, dim=-1),
-                F.normalize((local * assignments).sum(dim=-1), dim=1).flatten(1),
+                F.normalize(aggregated, dim=1).flatten(1),
             ),
             dim=-1,
         )
@@ -263,17 +279,27 @@ class SALADStudentModel(nn.Module):
         model_name: str,
         checkpoint: str,
         trainable_blocks: int = 2,
+        *,
+        dropout: float = 0.0,
     ):
         super().__init__()
+        if model_name not in {"dinov2_vits14", "dinov2_vits14_reg"}:
+            raise ValueError("Compact SALAD requires a DINOv2-S/14 backbone")
         self.backbone = DINOv2SALADBackbone(
             repo, model_name, checkpoint, trainable_blocks
         )
-        self.aggregator = CompactSALADHead(self.backbone.num_channels)
+        if self.backbone.num_channels != 384:
+            raise ValueError("Compact SALAD requires 384-channel DINOv2-S features")
+        self.aggregator = CompactSALADHead(self.backbone.num_channels, dropout=dropout)
 
     def set_backbone_trainable(self, enabled: bool) -> None:
         self.backbone.set_trainable(enabled)
 
     def encode(self, images: torch.Tensor) -> torch.Tensor:
+        if (images.ndim != 4 or images.shape[1] != 3
+                or any(value <= 0 or value % 14 for value in images.shape[-2:])
+                or (images.shape[-2] // 14) * (images.shape[-1] // 14) <= self.aggregator.num_clusters):
+            raise ValueError("Compact SALAD images require RGB BCHW, multiples of 14, and more patches than clusters")
         descriptor = self.aggregator(self.backbone(images))
         if descriptor.shape[1] != self.descriptor_dim:
             raise RuntimeError(

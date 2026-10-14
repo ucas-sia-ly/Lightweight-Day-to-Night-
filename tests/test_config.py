@@ -57,24 +57,16 @@ def test_resume_paths_do_not_change_experiment_fingerprint():
     assert changed.fingerprint() == config.fingerprint()
 
 
-@pytest.mark.parametrize("dimension", [128, 512, 4096])
-def test_formal_dimension_configs_are_strictly_paired(dimension):
-    baseline = load_config(f"configs/vpr/day_fake_{dimension}.yaml")
-    candidate = load_config(f"configs/vpr/cdnd_salad_{dimension}.yaml")
+def test_metric_configs_have_identical_budget_and_model():
+    baseline = load_config("configs/experiments/metric/salad_small_gsv_day_only_544.yaml")
+    candidate = load_config("configs/experiments/metric/salad_small_gsv_day_aug_544.yaml")
     assert baseline.data == candidate.data
-    assert baseline.vpr.descriptor_dim == candidate.vpr.descriptor_dim == dimension
-    assert baseline.vpr.cross_domain_aux == "none"
-    assert baseline.vpr.relation_teacher == "none"
-    assert candidate.vpr.cross_domain_aux == "cross_domain_relation"
-    assert candidate.vpr.relation_teacher == "salad"
-    assert candidate.vpr.relation_weight == pytest.approx(0.5)
-    assert candidate.vpr.relation_day_weight == pytest.approx(0.5)
-    assert candidate.vpr.relation_temperature == pytest.approx(0.07)
-    assert candidate.vpr.relation_queue_size == 2048
-    ignored = {
-        "output_dir", "cross_domain_aux", "relation_teacher", "relation_teacher_repo",
-        "relation_teacher_checkpoint", "relation_teacher_cache", "relation_teacher_input_size",
-    }
+    assert baseline.vpr.descriptor_dim == candidate.vpr.descriptor_dim == 544
+    assert baseline.vpr.model_family == candidate.vpr.model_family == "salad"
+    assert baseline.vpr.training_objective == candidate.vpr.training_objective == "multi_similarity"
+    assert baseline.vpr.cross_domain_aux == candidate.vpr.cross_domain_aux == "none"
+    assert baseline.vpr.relation_teacher == candidate.vpr.relation_teacher == "none"
+    ignored = {"output_dir", "train_domains"}
     baseline_values = {
         key: value for key, value in baseline.as_dict()["vpr"].items() if key not in ignored
     }
@@ -82,10 +74,11 @@ def test_formal_dimension_configs_are_strictly_paired(dimension):
         key: value for key, value in candidate.as_dict()["vpr"].items() if key not in ignored
     }
     assert baseline_values == candidate_values
-    assert baseline.vpr.sampler == "pk_balanced"
-    assert (baseline.vpr.pk_places_per_batch, baseline.vpr.pk_images_per_place) == (4, 2)
-    assert baseline.vpr.samples_per_epoch == 60_000
-    assert baseline.vpr.epochs == 20
+    assert baseline.vpr.sampler == "pk_balanced" and baseline.vpr.metric_within_city
+    assert (baseline.vpr.pk_places_per_batch, baseline.vpr.pk_images_per_place) == (32, 4)
+    assert baseline.vpr.samples_per_epoch == 251392
+    assert baseline.vpr.epochs == 2
+    assert baseline.vpr.workers == 0 and baseline.vpr.require_cuda
 
 
 def test_relation_teacher_requires_relation_training():
@@ -95,7 +88,7 @@ def test_relation_teacher_requires_relation_training():
 
 
 def test_reference_config_still_loads():
-    assert load_config("configs/references/official.yaml")
+    assert load_config("configs/references/salad.yaml")
 
 
 def test_config_uses_public_robotcar_and_day_validation_by_default():
@@ -124,42 +117,3 @@ def test_retired_test_protocol_fields_are_not_active_overrides(key):
 def test_test_sets_cannot_replace_checkpoint_validation(key, message):
     with pytest.raises(ValueError, match=message):
         apply_overrides(base_config(), [key])
-
-
-def test_official_generator_config_has_no_public_seed():
-    config = load_config("configs/generator/qsattn_official_objective_150k.yaml")
-    assert config.generator.objective == "qsattn"
-    assert config.generator.max_steps == 150_000
-    assert config.generator.qs_nce_identity
-    assert not hasattr(config.generator, "seed")
-
-
-def test_robotcar_only_ablation_configs_share_budget_and_initialization():
-    from a2b_lightvpr.config import load_config
-    configs = [load_config(f'configs/experiments/single_dataset/robotcar_only_{name}.yaml') for name in ('day_only','day_fake','cdnd')]
-    for c in configs:
-        assert c.vpr.datasets == ('robotcar',)
-        assert c.vpr.dataset_epoch_quotas == {'robotcar': 8944}
-        assert c.vpr.samples_per_epoch % c.vpr.batch_size == 0
-        assert c.vpr.epochs == 20 and c.generator.max_steps == 30000
-        assert not c.vpr.early_stopping and c.vpr.epoch_one_max_recall_drop == 0
-    assert len({c.vpr.init_checkpoint for c in configs}) == 1
-    assert len({c.data.generated_root for c in configs}) == 1
-    assert [c.vpr.relation_teacher for c in configs] == ['none','none','salad']
-    assert [c.vpr.train_domains for c in configs] == ['day','day_fake','day_fake']
-
-
-def test_svox_msls_only_configs_use_fixed_budget_without_robotcar_validation():
-    from a2b_lightvpr.config import load_config, validate_config
-    from dataclasses import replace
-    import pytest
-    for ds, quota in [('svox',33520),('msls',75840)]:
-        for group in ('day_only','day_fake','cdnd'):
-            c=load_config(f'configs/experiments/single_dataset/{ds}_only_{group}.yaml')
-            assert c.vpr.datasets==(ds,)
-            assert c.vpr.selection_rule=='fixed_budget_last'
-            assert c.vpr.samples_per_epoch==quota
-            assert not c.vpr.evaluate_epoch_zero
-            assert c.vpr.relation_teacher==('salad' if group=='cdnd' else 'none')
-            with pytest.raises(ValueError,match='Fixed-budget'):
-                validate_config(replace(c,vpr=replace(c.vpr,early_stopping=True)))

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import math
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -18,7 +19,7 @@ def audit_resources(config, output_path=None, scan_images: bool = True) -> dict:
     Historical manifest bytes and cache provenance are never rewritten.
     """
     cfg, data = config.vpr, config.data
-    stable = cfg.model_family == "stable_night_salad"
+    stable = cfg.model_family == "stable_night_salad" or cfg.training_objective == "multi_similarity"
     source_only = stable and cfg.train_domains in {"day_only", "day_aug"}
     needs_fake = cfg.train_domains in {"day_fake", "day_aug_fake"}
     uses_dino = cfg.model_family in {"salad", "stable_night_salad", "dino_mix", "boq"}
@@ -177,6 +178,26 @@ def audit_resources(config, output_path=None, scan_images: bool = True) -> dict:
             errors.append(f"{dataset}: no eligible place classes survive configured minimums")
         if not pk_ready:
             errors.append(f"{dataset}: PK sampling lacks P places or K distinct source images")
+        city_sampling = {}
+        if cfg.training_objective == "multi_similarity" and cfg.metric_within_city:
+            cities = defaultdict(set)
+            place_cities = defaultdict(set)
+            for row in selected:
+                place = row.get("place_id", "")
+                if place in eligible:
+                    city = row.get("route", "")
+                    cities[city].add(place)
+                    place_cities[place].add(city)
+            minimum_samples = sum(math.ceil(len(items) / cfg.pk_places_per_batch)
+                                  * cfg.batch_size for items in cities.values())
+            city_sampling = {"places_by_city": {city: len(items) for city, items in sorted(cities.items())},
+                             "minimum_coverage_samples": minimum_samples}
+            if "" in cities or any(len(items) < cfg.pk_places_per_batch for items in cities.values()):
+                errors.append(f"{dataset}: each metric city needs a name and P different places")
+            if any(len(items) != 1 for items in place_cities.values()):
+                errors.append(f"{dataset}: a metric place label belongs to multiple cities")
+            if cfg.dataset_epoch_quotas.get(dataset, 0) < minimum_samples:
+                errors.append(f"{dataset}: within-city full coverage requires {minimum_samples} samples per epoch")
         missing_sources = sorted(path for path in sources if not exists(path)) if scan_images else None
         missing_fakes = sorted(path for path in fakes if not exists(path)) if scan_images else None
         if missing_sources or missing_fakes:
@@ -202,6 +223,7 @@ def audit_resources(config, output_path=None, scan_images: bool = True) -> dict:
             "pk_ready": pk_ready,
             "pk_undersized_places": len(undersized),
             "pk_undersized_examples": undersized[:5],
+            **city_sampling,
         }
     if invalid_rows:
         errors.append("Training manifest rows lack required paths, IDs, labels or splits")
@@ -213,6 +235,7 @@ def audit_resources(config, output_path=None, scan_images: bool = True) -> dict:
     report = {
         "model_family": cfg.model_family,
         "train_domains": cfg.train_domains,
+        "training_objective": cfg.training_objective,
         "assets": assets,
         "datasets": datasets,
         "selected_rows": len(rows),

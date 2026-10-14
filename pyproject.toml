@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "a2b-lightvpr"
 version = "0.1.0"
-description = "Single-direction day-to-night generation for lightweight VPR training"
+description = "DINOv2-S and SALAD for nighttime visual place recognition"
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.24",
@@ -15,6 +15,7 @@ dependencies = [
   "torchvision>=0.16",
   "tqdm>=4.65",
   "tensorboard>=2.14",
+  "pytorch-metric-learning>=2.3",
 ]
 
 [project.optional-dependencies]
@@ -23,10 +24,8 @@ eval = [
   "timm>=0.9",
 ]
 test = ["pytest>=7.4"]
-paper = ["matplotlib>=3.8"]
 small-reference = [
   "pandas>=2.0",
-  "pytorch-metric-learning>=2.3",
   "scikit-learn>=1.3",
 ]
 
@@ -35,6 +34,9 @@ a2b-lightvpr = "a2b_lightvpr.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+a2b_lightvpr = ["protocols/*.txt", "protocols/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

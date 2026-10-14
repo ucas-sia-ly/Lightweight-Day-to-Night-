@@ -1,0 +1,67 @@
+# Standard SALAD-S, GSV place labels, one view per distinct source.
+data:
+  robotcar_seasons_root: /home/admin123/github/datasets/RobotCar-Seasons
+  generator_manifest: ''
+  vpr_source_manifest: data/manifests_gsv_metric/vpr_train.csv
+  generated_root: ''
+  tokyo_root: /home/admin123/github/datasets/tokyo247
+  svox_root: /home/admin123/github/datasets/svox
+  msls_root: /home/admin123/github/datasets/MSLS
+vpr:
+  output_dir: runs/vpr/salad_small_gsv_metric/day_only_seed0_lowmem
+  model_family: salad
+  aggregator: salad
+  descriptor_dim: 544
+  num_clusters: 16
+  image_height: 224
+  image_width: 224
+  input_transform: resize
+  init_checkpoint: runs/reference/salad-dinov2-s-544-gsv/last.ckpt
+  backbone_name: dinov2_vits14
+  backbone_repo: /home/admin123/.cache/torch/hub/facebookresearch_dinov2_main
+  backbone_checkpoint: /home/admin123/.cache/torch/hub/checkpoints/dinov2_vits14_pretrain.pth
+  backbone_trainable_blocks: 2
+  salad_dropout: 0.3
+  training_objective: multi_similarity
+  train_domains: day_only
+  metric_augmentation_probability: 0.5
+  metric_within_city: true
+  cross_domain_aux: none
+  random_seed: 0
+  epochs: 2
+  batch_size: 128
+  gradient_accumulation_steps: 1
+  workers: 0
+  encoder_lr: 1.0e-05
+  aggregator_lr: 3.0e-05
+  classifier_warmup_epochs: 0
+  weight_decay: 9.5e-09
+  amp: true
+  require_cuda: true
+  datasets:
+  - gsv_cities
+  min_class_images: 4
+  sampler: pk_balanced
+  pk_places_per_batch: 32
+  pk_images_per_place: 4
+  dataset_epoch_quotas:
+    gsv_cities: 251392
+  samples_per_epoch: 251392
+  scheduler: cosine
+  scheduler_min_lr_ratio: 0.2
+  selection_rule: validation_best
+  evaluate_epoch_zero: true
+  early_stopping: false
+  epoch_one_max_recall_drop: 0.03
+  tensorboard_enabled: true
+  tensorboard_log_interval: 10
+evaluation:
+  batch_size: 64
+  datasets:
+  - svox_day_val
+  protocol: standard
+  database_domain: day
+  recalls:
+  - 1
+  - 5
+  - 10

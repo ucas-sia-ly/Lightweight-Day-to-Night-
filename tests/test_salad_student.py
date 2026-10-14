@@ -52,12 +52,15 @@ def test_salad_backbone_preserves_only_last_two_trainable_blocks(tmp_path, monke
     assert not any(parameter.requires_grad for parameter in backbone.parameters())
 
 
-def test_salad_configs_are_strictly_paired():
-    baseline = load_config("configs/experiments/students/salad_small_day_fake_544.yaml")
-    candidate = load_config("configs/experiments/students/salad_small_cdnd_544.yaml")
+def test_salad_metric_configs_share_model_and_training_budget():
+    baseline = load_config("configs/experiments/metric/salad_small_gsv_day_only_544.yaml")
+    candidate = load_config("configs/experiments/metric/salad_small_gsv_day_aug_544.yaml")
     assert baseline.vpr.model_family == candidate.vpr.model_family == "salad"
     assert baseline.vpr.descriptor_dim == candidate.vpr.descriptor_dim == 544
-    assert baseline.vpr.backbone_name == candidate.vpr.backbone_name == "dinov2_vits14_reg"
+    assert baseline.vpr.backbone_name == candidate.vpr.backbone_name == "dinov2_vits14"
     assert baseline.vpr.backbone_trainable_blocks == candidate.vpr.backbone_trainable_blocks == 2
-    assert baseline.vpr.cross_domain_aux == "none"
-    assert candidate.vpr.cross_domain_aux == "cross_domain_relation"
+    assert baseline.vpr.cross_domain_aux == candidate.vpr.cross_domain_aux == "none"
+    assert baseline.vpr.training_objective == candidate.vpr.training_objective == "multi_similarity"
+    assert baseline.vpr.batch_size == candidate.vpr.batch_size == 128
+    assert baseline.vpr.samples_per_epoch == candidate.vpr.samples_per_epoch == 251392
+    assert (baseline.vpr.train_domains, candidate.vpr.train_domains) == ("day_only", "day_aug")

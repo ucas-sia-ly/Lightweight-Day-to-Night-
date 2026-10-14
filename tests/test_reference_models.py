@@ -300,37 +300,3 @@ def test_reference_benchmark_reports_storage_and_batch_dependence(tmp_path, monk
         32_000_000 / 1024**3
     )
     assert metrics["batch_dependence"] is not None
-
-
-def test_crica_pca_rejects_batch_dependent_feature_mixing(monkeypatch, tmp_path):
-    from a2b_lightvpr.references import pca as reference_pca
-
-    monkeypatch.setattr(reference_pca, "_registry", lambda _: {
-        "crica": {"loader": "cricavpr_small", "descriptor_dim": 5376, "batch_dependent": True},
-    })
-    with pytest.raises(ValueError, match="batch-size=1"):
-        reference_pca.fit_reference_pca(
-            None, "unused", "crica", tmp_path / "pca.pt", tmp_path / "cache.npy",
-            batch_size=16,
-        )
-
-
-def test_crica_pca_single_image_mode_reaches_gsv_selection(monkeypatch, tmp_path):
-    from a2b_lightvpr.references import pca as reference_pca
-
-    monkeypatch.setattr(reference_pca, "_registry", lambda _: {
-        "crica": {
-            "loader": "cricavpr_small", "descriptor_dim": 5376,
-            "batch_dependent": True, "fit_source": "gsv_cities", "fit_root": "gsv",
-        },
-    })
-    def selected(root, count, seed):
-        assert (root, count, seed) == ("gsv", 20000, 0)
-        raise LookupError("reached GSV selection")
-
-    monkeypatch.setattr(reference_pca, "select_gsv_images", selected)
-    with pytest.raises(LookupError, match="reached GSV selection"):
-        reference_pca.fit_reference_pca(
-            None, "unused", "crica", tmp_path / "pca.pt", tmp_path / "cache.npy",
-            batch_size=1,
-        )

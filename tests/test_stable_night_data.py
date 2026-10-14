@@ -1,5 +1,6 @@
 import csv
 import random
+from multiprocessing.connection import Listener
 
 import numpy as np
 import pytest
@@ -163,6 +164,11 @@ def test_source_augmentation_is_deterministic_by_seed_source_and_epoch(tmp_path)
 
 
 def test_shared_epoch_reaches_spawned_persistent_data_worker(tmp_path):
+    try:
+        with Listener(address=str(tmp_path / "worker_probe.sock"), family="AF_UNIX"):
+            pass
+    except PermissionError:
+        pytest.skip("The execution environment forbids the IPC sockets required by spawned PyTorch workers")
     day = tmp_path / "day.png"
     Image.new("RGB", (56, 28), (120, 130, 140)).save(day)
     manifest = write_manifest(tmp_path / "source.csv", [source_row(day)])
@@ -170,7 +176,7 @@ def test_shared_epoch_reaches_spawned_persistent_data_worker(tmp_path):
                                     train_domains="day_aug", random_seed=17)
     assert dataset._epoch.is_shared()
     loader = DataLoader(dataset, batch_size=1, num_workers=1, multiprocessing_context="spawn",
-                        persistent_workers=True, prefetch_factor=1)
+                        persistent_workers=True, prefetch_factor=1, timeout=20)
     try:
         first = next(iter(loader))["aug"][0]
         dataset.set_epoch(1)

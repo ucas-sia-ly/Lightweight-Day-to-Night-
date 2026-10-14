@@ -14,12 +14,28 @@ from .config import ExperimentConfig
 from .vpr.model import build_descriptor_model
 
 
+def vpr_device(config: ExperimentConfig) -> torch.device:
+    available = torch.cuda.is_available()
+    if config.vpr.require_cuda and not available:
+        raise RuntimeError("This experiment requires CUDA, but PyTorch cannot access a GPU. Run in a GPU-enabled environment; use vpr.require_cuda=false only for intentional CPU checks.")
+    return torch.device("cuda" if available else "cpu")
+
+
 def load_vpr_model(config: ExperimentConfig, checkpoint: str | Path | None = None):
     cfg = config.vpr
     checkpoint = Path(checkpoint or Path(cfg.output_dir) / "model_best.pt")
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
     if state.get("kind") != "vpr_inference":
         raise ValueError("Expected an inference-only VPR checkpoint")
+    expected_metadata = {
+        "image_size": [cfg.image_height, cfg.image_width],
+        "input_transform": cfg.input_transform,
+        "model_family": cfg.model_family,
+        "backbone_name": cfg.backbone_name,
+    }
+    for name, expected in expected_metadata.items():
+        if name in state and state[name] != expected:
+            raise ValueError(f"Inference checkpoint {name}={state[name]!r} does not match configuration {expected!r}")
     checkpoint_dim = state.get("descriptor_dim")
     if checkpoint_dim is not None and int(checkpoint_dim) != cfg.descriptor_dim:
         raise ValueError(
@@ -52,6 +68,7 @@ def load_vpr_model(config: ExperimentConfig, checkpoint: str | Path | None = Non
         stable_dustbin_gamma_init=cfg.stable_dustbin_gamma_init,
         stable_dustbin_gamma_max=cfg.stable_dustbin_gamma_max,
         stable_sinkhorn_iterations=cfg.stable_sinkhorn_iterations,
+        salad_dropout=cfg.salad_dropout,
         # The inference checkpoint contains the complete model state. Avoid
         # requiring an unrelated original initialization file after relocation.
         load_initial_checkpoint=False,
@@ -67,8 +84,8 @@ def benchmark_model(
     warmup: int = 100,
     iterations: int = 1_000,
 ) -> dict:
+    device = vpr_device(config)
     model, state, checkpoint_path = load_vpr_model(config, checkpoint)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval().to(device)
     sample = torch.randn(
         1, 3, config.vpr.image_height, config.vpr.image_width, device=device
@@ -96,6 +113,7 @@ def benchmark_model(
         "encoder": config.vpr.model_family,
         "aggregator": config.vpr.aggregator,
         "image_size": [config.vpr.image_height, config.vpr.image_width],
+        "input_transform": config.vpr.input_transform,
         "descriptor_dim": config.vpr.descriptor_dim,
         "parameters": parameters,
         "fp16_parameter_mib": parameters * 2 / 1024**2,

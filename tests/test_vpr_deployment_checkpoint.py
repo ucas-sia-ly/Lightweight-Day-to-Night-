@@ -33,6 +33,8 @@ def test_training_checkpoint_conversion_is_model_exact_and_strips_training_asset
     assert payload["kind"] == "vpr_inference"
     assert payload["descriptor_dim"] == 512
     assert payload["random_seed"] == 0
+    assert payload["input_transform"] == config.vpr.input_transform
+    assert payload["image_size"] == [config.vpr.image_height, config.vpr.image_width]
     assert torch.equal(payload["model"]["encoder.weight"], model_state["encoder.weight"])
     forbidden = {
         "classifier", "optimizer", "relation_queue_state", "sampler_state",
@@ -59,4 +61,16 @@ def test_deployment_loader_rejects_checkpoint_seed_mismatch(tmp_path):
         "model": {},
     }, checkpoint)
     with pytest.raises(ValueError, match="random seed"):
+        load_vpr_model(config, checkpoint)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("image_size", [224, 224]), ("input_transform", "resize"),
+    ("model_family", "salad"), ("backbone_name", "dinov2_vits14"),
+])
+def test_deployment_loader_rejects_preprocessing_and_architecture_mismatch(tmp_path, field, value):
+    config = ExperimentConfig(DataConfig(generator_manifest="external.csv"))
+    checkpoint = tmp_path / "wrong-metadata.pt"
+    torch.save({"kind": "vpr_inference", "descriptor_dim": 512, field: value, "model": {}}, checkpoint)
+    with pytest.raises(ValueError, match=field):
         load_vpr_model(config, checkpoint)

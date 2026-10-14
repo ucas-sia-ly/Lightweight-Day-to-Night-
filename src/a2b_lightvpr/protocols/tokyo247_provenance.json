@@ -1,0 +1,1952 @@
+{
+  "schema_version": 1,
+  "benchmark": "Tokyo 24/7 standard 315-query subset",
+  "query_names_file": "tokyo247_query_names.txt",
+  "query_names_sha256": "ab7678ba0a58bbf39e41b2e00b4ac3afb3de9e1ea2e5ebf73273ff300bd250f4",
+  "queries": 315,
+  "database_images": 75984,
+  "database_panoramas": 6332,
+  "crops_per_panorama": 12,
+  "positive_radius_m": 25.0,
+  "condition_counts": {
+    "day": 105,
+    "night": 105,
+    "sunset": 105
+  },
+  "source_urls_and_sha256": {
+    "query_list": {
+      "url": "https://raw.githubusercontent.com/QVPR/Patch-NetVLAD/main/patchnetvlad/dataset_imagenames/tokyo247_imageNames_query.txt",
+      "sha256": "6b9607bee33cce8384e0233ef2d674661d3d1901ad4290e280e5ced41238cfab"
+    },
+    "database_list": {
+      "url": "https://raw.githubusercontent.com/QVPR/Patch-NetVLAD/main/patchnetvlad/dataset_imagenames/tokyo247_imageNames_index.txt",
+      "sha256": "f968167b2f9c785ab29809a0c4a5f70ea71fad6fa4844f749e05ab8db2a5981a"
+    },
+    "ground_truth": {
+      "url": "https://raw.githubusercontent.com/QVPR/Patch-NetVLAD/main/patchnetvlad/dataset_gt_files/tokyo247.npz",
+      "sha256": "5baeae72ecd33c9765c55b1274a7ff5e9e3f40952a6b0b02d33383b63e79944c"
+    }
+  },
+  "panorama_nms_sources": [
+    "https://raw.githubusercontent.com/Relja/netvlad/master/datasets/dbTokyo247.m",
+    "https://github.com/QVPR/Patch-NetVLAD/blob/main/feature_match.py"
+  ],
+  "query_coordinate_reference": "The primary Patch-NetVLAD GT npz, in the official query-list order",
+  "query_metadata": [
+    {
+      "image_name": "00010.jpg",
+      "condition": "day",
+      "utm_e": 382284.783877,
+      "utm_n": 3946975.188543
+    },
+    {
+      "image_name": "00011.jpg",
+      "condition": "sunset",
+      "utm_e": 382284.783877,
+      "utm_n": 3946975.188543
+    },
+    {
+      "image_name": "00012.jpg",
+      "condition": "night",
+      "utm_e": 382284.783877,
+      "utm_n": 3946975.188543
+    },
+    {
+      "image_name": "00013.jpg",
+      "condition": "day",
+      "utm_e": 382284.783877,
+      "utm_n": 3946975.188543
+    },
+    {
+      "image_name": "00014.jpg",
+      "condition": "sunset",
+      "utm_e": 382284.783877,
+      "utm_n": 3946975.188543
+    },
+    {
+      "image_name": "00015.jpg",
+      "condition": "night",
+      "utm_e": 382284.783877,
+      "utm_n": 3946975.188543
+    },
+    {
+      "image_name": "00016.jpg",
+      "condition": "day",
+      "utm_e": 382284.783877,
+      "utm_n": 3946975.188543
+    },
+    {
+      "image_name": "00017.jpg",
+      "condition": "sunset",
+      "utm_e": 382284.783877,
+      "utm_n": 3946975.188543
+    },
+    {
+      "image_name": "00018.jpg",
+      "condition": "night",
+      "utm_e": 382284.783877,
+      "utm_n": 3946975.188543
+    },
+    {
+      "image_name": "00019.jpg",
+      "condition": "day",
+      "utm_e": 382154.080827,
+      "utm_n": 3946929.771043
+    },
+    {
+      "image_name": "00020.jpg",
+      "condition": "sunset",
+      "utm_e": 382154.080827,
+      "utm_n": 3946929.771043
+    },
+    {
+      "image_name": "00021.jpg",
+      "condition": "night",
+      "utm_e": 382154.080827,
+      "utm_n": 3946929.771043
+    },
+    {
+      "image_name": "00022.jpg",
+      "condition": "day",
+      "utm_e": 382154.080827,
+      "utm_n": 3946929.771043
+    },
+    {
+      "image_name": "00023.jpg",
+      "condition": "sunset",
+      "utm_e": 382154.080827,
+      "utm_n": 3946929.771043
+    },
+    {
+      "image_name": "00024.jpg",
+      "condition": "night",
+      "utm_e": 382154.080827,
+      "utm_n": 3946929.771043
+    },
+    {
+      "image_name": "00025.jpg",
+      "condition": "day",
+      "utm_e": 382154.080827,
+      "utm_n": 3946929.771043
+    },
+    {
+      "image_name": "00026.jpg",
+      "condition": "sunset",
+      "utm_e": 382154.080827,
+      "utm_n": 3946929.771043
+    },
+    {
+      "image_name": "00027.jpg",
+      "condition": "night",
+      "utm_e": 382154.080827,
+      "utm_n": 3946929.771043
+    },
+    {
+      "image_name": "00028.jpg",
+      "condition": "day",
+      "utm_e": 381994.263425,
+      "utm_n": 3946757.718643
+    },
+    {
+      "image_name": "00029.jpg",
+      "condition": "sunset",
+      "utm_e": 381994.263425,
+      "utm_n": 3946757.718643
+    },
+    {
+      "image_name": "00030.jpg",
+      "condition": "night",
+      "utm_e": 381994.263425,
+      "utm_n": 3946757.718643
+    },
+    {
+      "image_name": "00031.jpg",
+      "condition": "day",
+      "utm_e": 381994.263425,
+      "utm_n": 3946757.718643
+    },
+    {
+      "image_name": "00032.jpg",
+      "condition": "sunset",
+      "utm_e": 381994.263425,
+      "utm_n": 3946757.718643
+    },
+    {
+      "image_name": "00033.jpg",
+      "condition": "night",
+      "utm_e": 381994.263425,
+      "utm_n": 3946757.718643
+    },
+    {
+      "image_name": "00034.jpg",
+      "condition": "day",
+      "utm_e": 381994.263425,
+      "utm_n": 3946757.718643
+    },
+    {
+      "image_name": "00035.jpg",
+      "condition": "sunset",
+      "utm_e": 381994.263425,
+      "utm_n": 3946757.718643
+    },
+    {
+      "image_name": "00036.jpg",
+      "condition": "night",
+      "utm_e": 381994.263425,
+      "utm_n": 3946757.718643
+    },
+    {
+      "image_name": "00037.jpg",
+      "condition": "day",
+      "utm_e": 381888.161742,
+      "utm_n": 3946594.828957
+    },
+    {
+      "image_name": "00038.jpg",
+      "condition": "sunset",
+      "utm_e": 381888.161742,
+      "utm_n": 3946594.828957
+    },
+    {
+      "image_name": "00039.jpg",
+      "condition": "night",
+      "utm_e": 381888.161742,
+      "utm_n": 3946594.828957
+    },
+    {
+      "image_name": "00040.jpg",
+      "condition": "day",
+      "utm_e": 381888.161742,
+      "utm_n": 3946594.828957
+    },
+    {
+      "image_name": "00041.jpg",
+      "condition": "sunset",
+      "utm_e": 381888.161742,
+      "utm_n": 3946594.828957
+    },
+    {
+      "image_name": "00042.jpg",
+      "condition": "night",
+      "utm_e": 381888.161742,
+      "utm_n": 3946594.828957
+    },
+    {
+      "image_name": "00043.jpg",
+      "condition": "day",
+      "utm_e": 381888.161742,
+      "utm_n": 3946594.828957
+    },
+    {
+      "image_name": "00044.jpg",
+      "condition": "sunset",
+      "utm_e": 381888.161742,
+      "utm_n": 3946594.828957
+    },
+    {
+      "image_name": "00045.jpg",
+      "condition": "night",
+      "utm_e": 381888.161742,
+      "utm_n": 3946594.828957
+    },
+    {
+      "image_name": "00046.jpg",
+      "condition": "day",
+      "utm_e": 381909.700841,
+      "utm_n": 3946894.184174
+    },
+    {
+      "image_name": "00047.jpg",
+      "condition": "sunset",
+      "utm_e": 381909.700841,
+      "utm_n": 3946894.184174
+    },
+    {
+      "image_name": "00048.jpg",
+      "condition": "night",
+      "utm_e": 381909.700841,
+      "utm_n": 3946894.184174
+    },
+    {
+      "image_name": "00049.jpg",
+      "condition": "day",
+      "utm_e": 381909.700841,
+      "utm_n": 3946894.184174
+    },
+    {
+      "image_name": "00050.jpg",
+      "condition": "sunset",
+      "utm_e": 381909.700841,
+      "utm_n": 3946894.184174
+    },
+    {
+      "image_name": "00051.jpg",
+      "condition": "night",
+      "utm_e": 381909.700841,
+      "utm_n": 3946894.184174
+    },
+    {
+      "image_name": "00052.jpg",
+      "condition": "day",
+      "utm_e": 381909.700841,
+      "utm_n": 3946894.184174
+    },
+    {
+      "image_name": "00053.jpg",
+      "condition": "sunset",
+      "utm_e": 381909.700841,
+      "utm_n": 3946894.184174
+    },
+    {
+      "image_name": "00054.jpg",
+      "condition": "night",
+      "utm_e": 381909.700841,
+      "utm_n": 3946894.184174
+    },
+    {
+      "image_name": "00055.jpg",
+      "condition": "day",
+      "utm_e": 381919.307113,
+      "utm_n": 3947017.640636
+    },
+    {
+      "image_name": "00056.jpg",
+      "condition": "sunset",
+      "utm_e": 381919.307113,
+      "utm_n": 3947017.640636
+    },
+    {
+      "image_name": "00057.jpg",
+      "condition": "night",
+      "utm_e": 381919.307113,
+      "utm_n": 3947017.640636
+    },
+    {
+      "image_name": "00058.jpg",
+      "condition": "day",
+      "utm_e": 381919.307113,
+      "utm_n": 3947017.640636
+    },
+    {
+      "image_name": "00059.jpg",
+      "condition": "sunset",
+      "utm_e": 381919.307113,
+      "utm_n": 3947017.640636
+    },
+    {
+      "image_name": "00060.jpg",
+      "condition": "night",
+      "utm_e": 381919.307113,
+      "utm_n": 3947017.640636
+    },
+    {
+      "image_name": "00061.jpg",
+      "condition": "day",
+      "utm_e": 381919.307113,
+      "utm_n": 3947017.640636
+    },
+    {
+      "image_name": "00062.jpg",
+      "condition": "sunset",
+      "utm_e": 381919.307113,
+      "utm_n": 3947017.640636
+    },
+    {
+      "image_name": "00063.jpg",
+      "condition": "night",
+      "utm_e": 381919.307113,
+      "utm_n": 3947017.640636
+    },
+    {
+      "image_name": "00082.jpg",
+      "condition": "day",
+      "utm_e": 382138.931966,
+      "utm_n": 3947132.542839
+    },
+    {
+      "image_name": "00083.jpg",
+      "condition": "sunset",
+      "utm_e": 382138.931966,
+      "utm_n": 3947132.542839
+    },
+    {
+      "image_name": "00084.jpg",
+      "condition": "night",
+      "utm_e": 382138.931966,
+      "utm_n": 3947132.542839
+    },
+    {
+      "image_name": "00085.jpg",
+      "condition": "day",
+      "utm_e": 382138.931966,
+      "utm_n": 3947132.542839
+    },
+    {
+      "image_name": "00086.jpg",
+      "condition": "sunset",
+      "utm_e": 382138.931966,
+      "utm_n": 3947132.542839
+    },
+    {
+      "image_name": "00087.jpg",
+      "condition": "night",
+      "utm_e": 382138.931966,
+      "utm_n": 3947132.542839
+    },
+    {
+      "image_name": "00088.jpg",
+      "condition": "day",
+      "utm_e": 382138.931966,
+      "utm_n": 3947132.542839
+    },
+    {
+      "image_name": "00089.jpg",
+      "condition": "sunset",
+      "utm_e": 382138.931966,
+      "utm_n": 3947132.542839
+    },
+    {
+      "image_name": "00090.jpg",
+      "condition": "night",
+      "utm_e": 382138.931966,
+      "utm_n": 3947132.542839
+    },
+    {
+      "image_name": "00091.jpg",
+      "condition": "day",
+      "utm_e": 382199.758815,
+      "utm_n": 3947070.056001
+    },
+    {
+      "image_name": "00092.jpg",
+      "condition": "sunset",
+      "utm_e": 382199.758815,
+      "utm_n": 3947070.056001
+    },
+    {
+      "image_name": "00093.jpg",
+      "condition": "night",
+      "utm_e": 382199.758815,
+      "utm_n": 3947070.056001
+    },
+    {
+      "image_name": "00094.jpg",
+      "condition": "day",
+      "utm_e": 382199.758815,
+      "utm_n": 3947070.056001
+    },
+    {
+      "image_name": "00095.jpg",
+      "condition": "sunset",
+      "utm_e": 382199.758815,
+      "utm_n": 3947070.056001
+    },
+    {
+      "image_name": "00096.jpg",
+      "condition": "night",
+      "utm_e": 382199.758815,
+      "utm_n": 3947070.056001
+    },
+    {
+      "image_name": "00097.jpg",
+      "condition": "day",
+      "utm_e": 382199.758815,
+      "utm_n": 3947070.056001
+    },
+    {
+      "image_name": "00098.jpg",
+      "condition": "sunset",
+      "utm_e": 382199.758815,
+      "utm_n": 3947070.056001
+    },
+    {
+      "image_name": "00099.jpg",
+      "condition": "night",
+      "utm_e": 382199.758815,
+      "utm_n": 3947070.056001
+    },
+    {
+      "image_name": "00100.jpg",
+      "condition": "day",
+      "utm_e": 382257.19777,
+      "utm_n": 3947045.665857
+    },
+    {
+      "image_name": "00101.jpg",
+      "condition": "sunset",
+      "utm_e": 382257.19777,
+      "utm_n": 3947045.665857
+    },
+    {
+      "image_name": "00102.jpg",
+      "condition": "night",
+      "utm_e": 382257.19777,
+      "utm_n": 3947045.665857
+    },
+    {
+      "image_name": "00103.jpg",
+      "condition": "day",
+      "utm_e": 382257.19777,
+      "utm_n": 3947045.665857
+    },
+    {
+      "image_name": "00104.jpg",
+      "condition": "sunset",
+      "utm_e": 382257.19777,
+      "utm_n": 3947045.665857
+    },
+    {
+      "image_name": "00105.jpg",
+      "condition": "night",
+      "utm_e": 382257.19777,
+      "utm_n": 3947045.665857
+    },
+    {
+      "image_name": "00106.jpg",
+      "condition": "day",
+      "utm_e": 382257.19777,
+      "utm_n": 3947045.665857
+    },
+    {
+      "image_name": "00107.jpg",
+      "condition": "sunset",
+      "utm_e": 382257.19777,
+      "utm_n": 3947045.665857
+    },
+    {
+      "image_name": "00108.jpg",
+      "condition": "night",
+      "utm_e": 382257.19777,
+      "utm_n": 3947045.665857
+    },
+    {
+      "image_name": "00109.jpg",
+      "condition": "day",
+      "utm_e": 382309.870743,
+      "utm_n": 3947030.546928
+    },
+    {
+      "image_name": "00110.jpg",
+      "condition": "sunset",
+      "utm_e": 382309.870743,
+      "utm_n": 3947030.546928
+    },
+    {
+      "image_name": "00111.jpg",
+      "condition": "night",
+      "utm_e": 382309.870743,
+      "utm_n": 3947030.546928
+    },
+    {
+      "image_name": "00112.jpg",
+      "condition": "day",
+      "utm_e": 382309.870743,
+      "utm_n": 3947030.546928
+    },
+    {
+      "image_name": "00113.jpg",
+      "condition": "sunset",
+      "utm_e": 382309.870743,
+      "utm_n": 3947030.546928
+    },
+    {
+      "image_name": "00114.jpg",
+      "condition": "night",
+      "utm_e": 382309.870743,
+      "utm_n": 3947030.546928
+    },
+    {
+      "image_name": "00115.jpg",
+      "condition": "day",
+      "utm_e": 382309.870743,
+      "utm_n": 3947030.546928
+    },
+    {
+      "image_name": "00116.jpg",
+      "condition": "sunset",
+      "utm_e": 382309.870743,
+      "utm_n": 3947030.546928
+    },
+    {
+      "image_name": "00117.jpg",
+      "condition": "night",
+      "utm_e": 382309.870743,
+      "utm_n": 3947030.546928
+    },
+    {
+      "image_name": "00118.jpg",
+      "condition": "day",
+      "utm_e": 382392.565395,
+      "utm_n": 3947053.748298
+    },
+    {
+      "image_name": "00119.jpg",
+      "condition": "sunset",
+      "utm_e": 382392.565395,
+      "utm_n": 3947053.748298
+    },
+    {
+      "image_name": "00120.jpg",
+      "condition": "night",
+      "utm_e": 382392.565395,
+      "utm_n": 3947053.748298
+    },
+    {
+      "image_name": "00121.jpg",
+      "condition": "day",
+      "utm_e": 382392.565395,
+      "utm_n": 3947053.748298
+    },
+    {
+      "image_name": "00122.jpg",
+      "condition": "sunset",
+      "utm_e": 382392.565395,
+      "utm_n": 3947053.748298
+    },
+    {
+      "image_name": "00123.jpg",
+      "condition": "night",
+      "utm_e": 382392.565395,
+      "utm_n": 3947053.748298
+    },
+    {
+      "image_name": "00124.jpg",
+      "condition": "day",
+      "utm_e": 382392.565395,
+      "utm_n": 3947053.748298
+    },
+    {
+      "image_name": "00125.jpg",
+      "condition": "sunset",
+      "utm_e": 382392.565395,
+      "utm_n": 3947053.748298
+    },
+    {
+      "image_name": "00126.jpg",
+      "condition": "night",
+      "utm_e": 382392.565395,
+      "utm_n": 3947053.748298
+    },
+    {
+      "image_name": "00127.jpg",
+      "condition": "day",
+      "utm_e": 382414.21097,
+      "utm_n": 3947122.797699
+    },
+    {
+      "image_name": "00128.jpg",
+      "condition": "sunset",
+      "utm_e": 382414.21097,
+      "utm_n": 3947122.797699
+    },
+    {
+      "image_name": "00129.jpg",
+      "condition": "night",
+      "utm_e": 382414.21097,
+      "utm_n": 3947122.797699
+    },
+    {
+      "image_name": "00130.jpg",
+      "condition": "day",
+      "utm_e": 382414.21097,
+      "utm_n": 3947122.797699
+    },
+    {
+      "image_name": "00131.jpg",
+      "condition": "sunset",
+      "utm_e": 382414.21097,
+      "utm_n": 3947122.797699
+    },
+    {
+      "image_name": "00132.jpg",
+      "condition": "night",
+      "utm_e": 382414.21097,
+      "utm_n": 3947122.797699
+    },
+    {
+      "image_name": "00133.jpg",
+      "condition": "day",
+      "utm_e": 382414.21097,
+      "utm_n": 3947122.797699
+    },
+    {
+      "image_name": "00134.jpg",
+      "condition": "sunset",
+      "utm_e": 382414.21097,
+      "utm_n": 3947122.797699
+    },
+    {
+      "image_name": "00135.jpg",
+      "condition": "night",
+      "utm_e": 382414.21097,
+      "utm_n": 3947122.797699
+    },
+    {
+      "image_name": "00145.jpg",
+      "condition": "day",
+      "utm_e": 382357.862972,
+      "utm_n": 3947263.878114
+    },
+    {
+      "image_name": "00146.jpg",
+      "condition": "sunset",
+      "utm_e": 382357.862972,
+      "utm_n": 3947263.878114
+    },
+    {
+      "image_name": "00147.jpg",
+      "condition": "night",
+      "utm_e": 382357.862972,
+      "utm_n": 3947263.878114
+    },
+    {
+      "image_name": "00148.jpg",
+      "condition": "day",
+      "utm_e": 382357.862972,
+      "utm_n": 3947263.878114
+    },
+    {
+      "image_name": "00149.jpg",
+      "condition": "sunset",
+      "utm_e": 382357.862972,
+      "utm_n": 3947263.878114
+    },
+    {
+      "image_name": "00150.jpg",
+      "condition": "night",
+      "utm_e": 382357.862972,
+      "utm_n": 3947263.878114
+    },
+    {
+      "image_name": "00151.jpg",
+      "condition": "day",
+      "utm_e": 382357.862972,
+      "utm_n": 3947263.878114
+    },
+    {
+      "image_name": "00152.jpg",
+      "condition": "sunset",
+      "utm_e": 382357.862972,
+      "utm_n": 3947263.878114
+    },
+    {
+      "image_name": "00153.jpg",
+      "condition": "night",
+      "utm_e": 382357.862972,
+      "utm_n": 3947263.878114
+    },
+    {
+      "image_name": "00154.jpg",
+      "condition": "day",
+      "utm_e": 382283.57323,
+      "utm_n": 3947273.625118
+    },
+    {
+      "image_name": "00155.jpg",
+      "condition": "sunset",
+      "utm_e": 382283.57323,
+      "utm_n": 3947273.625118
+    },
+    {
+      "image_name": "00156.jpg",
+      "condition": "night",
+      "utm_e": 382283.57323,
+      "utm_n": 3947273.625118
+    },
+    {
+      "image_name": "00157.jpg",
+      "condition": "day",
+      "utm_e": 382283.57323,
+      "utm_n": 3947273.625118
+    },
+    {
+      "image_name": "00158.jpg",
+      "condition": "sunset",
+      "utm_e": 382283.57323,
+      "utm_n": 3947273.625118
+    },
+    {
+      "image_name": "00159.jpg",
+      "condition": "night",
+      "utm_e": 382283.57323,
+      "utm_n": 3947273.625118
+    },
+    {
+      "image_name": "00160.jpg",
+      "condition": "day",
+      "utm_e": 382283.57323,
+      "utm_n": 3947273.625118
+    },
+    {
+      "image_name": "00161.jpg",
+      "condition": "sunset",
+      "utm_e": 382283.57323,
+      "utm_n": 3947273.625118
+    },
+    {
+      "image_name": "00162.jpg",
+      "condition": "night",
+      "utm_e": 382283.57323,
+      "utm_n": 3947273.625118
+    },
+    {
+      "image_name": "00163.jpg",
+      "condition": "day",
+      "utm_e": 382351.181259,
+      "utm_n": 3947183.093431
+    },
+    {
+      "image_name": "00164.jpg",
+      "condition": "sunset",
+      "utm_e": 382351.181259,
+      "utm_n": 3947183.093431
+    },
+    {
+      "image_name": "00165.jpg",
+      "condition": "night",
+      "utm_e": 382351.181259,
+      "utm_n": 3947183.093431
+    },
+    {
+      "image_name": "00166.jpg",
+      "condition": "day",
+      "utm_e": 382351.181259,
+      "utm_n": 3947183.093431
+    },
+    {
+      "image_name": "00167.jpg",
+      "condition": "sunset",
+      "utm_e": 382351.181259,
+      "utm_n": 3947183.093431
+    },
+    {
+      "image_name": "00168.jpg",
+      "condition": "night",
+      "utm_e": 382351.181259,
+      "utm_n": 3947183.093431
+    },
+    {
+      "image_name": "00169.jpg",
+      "condition": "day",
+      "utm_e": 382351.181259,
+      "utm_n": 3947183.093431
+    },
+    {
+      "image_name": "00170.jpg",
+      "condition": "sunset",
+      "utm_e": 382351.181259,
+      "utm_n": 3947183.093431
+    },
+    {
+      "image_name": "00171.jpg",
+      "condition": "night",
+      "utm_e": 382351.181259,
+      "utm_n": 3947183.093431
+    },
+    {
+      "image_name": "00172.jpg",
+      "condition": "day",
+      "utm_e": 382291.778425,
+      "utm_n": 3947093.243869
+    },
+    {
+      "image_name": "00173.jpg",
+      "condition": "sunset",
+      "utm_e": 382291.778425,
+      "utm_n": 3947093.243869
+    },
+    {
+      "image_name": "00174.jpg",
+      "condition": "night",
+      "utm_e": 382291.778425,
+      "utm_n": 3947093.243869
+    },
+    {
+      "image_name": "00175.jpg",
+      "condition": "day",
+      "utm_e": 382291.778425,
+      "utm_n": 3947093.243869
+    },
+    {
+      "image_name": "00176.jpg",
+      "condition": "sunset",
+      "utm_e": 382291.778425,
+      "utm_n": 3947093.243869
+    },
+    {
+      "image_name": "00177.jpg",
+      "condition": "night",
+      "utm_e": 382291.778425,
+      "utm_n": 3947093.243869
+    },
+    {
+      "image_name": "00178.jpg",
+      "condition": "day",
+      "utm_e": 382291.778425,
+      "utm_n": 3947093.243869
+    },
+    {
+      "image_name": "00179.jpg",
+      "condition": "sunset",
+      "utm_e": 382291.778425,
+      "utm_n": 3947093.243869
+    },
+    {
+      "image_name": "00180.jpg",
+      "condition": "night",
+      "utm_e": 382291.778425,
+      "utm_n": 3947093.243869
+    },
+    {
+      "image_name": "00181.jpg",
+      "condition": "day",
+      "utm_e": 382222.686028,
+      "utm_n": 3947099.039749
+    },
+    {
+      "image_name": "00182.jpg",
+      "condition": "sunset",
+      "utm_e": 382222.686028,
+      "utm_n": 3947099.039749
+    },
+    {
+      "image_name": "00183.jpg",
+      "condition": "night",
+      "utm_e": 382222.686028,
+      "utm_n": 3947099.039749
+    },
+    {
+      "image_name": "00184.jpg",
+      "condition": "day",
+      "utm_e": 382222.686028,
+      "utm_n": 3947099.039749
+    },
+    {
+      "image_name": "00185.jpg",
+      "condition": "sunset",
+      "utm_e": 382222.686028,
+      "utm_n": 3947099.039749
+    },
+    {
+      "image_name": "00186.jpg",
+      "condition": "night",
+      "utm_e": 382222.686028,
+      "utm_n": 3947099.039749
+    },
+    {
+      "image_name": "00187.jpg",
+      "condition": "day",
+      "utm_e": 382222.686028,
+      "utm_n": 3947099.039749
+    },
+    {
+      "image_name": "00188.jpg",
+      "condition": "sunset",
+      "utm_e": 382222.686028,
+      "utm_n": 3947099.039749
+    },
+    {
+      "image_name": "00189.jpg",
+      "condition": "night",
+      "utm_e": 382222.686028,
+      "utm_n": 3947099.039749
+    },
+    {
+      "image_name": "00190.jpg",
+      "condition": "day",
+      "utm_e": 382168.514448,
+      "utm_n": 3947083.005757
+    },
+    {
+      "image_name": "00191.jpg",
+      "condition": "sunset",
+      "utm_e": 382168.514448,
+      "utm_n": 3947083.005757
+    },
+    {
+      "image_name": "00192.jpg",
+      "condition": "night",
+      "utm_e": 382168.514448,
+      "utm_n": 3947083.005757
+    },
+    {
+      "image_name": "00193.jpg",
+      "condition": "day",
+      "utm_e": 382168.514448,
+      "utm_n": 3947083.005757
+    },
+    {
+      "image_name": "00194.jpg",
+      "condition": "sunset",
+      "utm_e": 382168.514448,
+      "utm_n": 3947083.005757
+    },
+    {
+      "image_name": "00195.jpg",
+      "condition": "night",
+      "utm_e": 382168.514448,
+      "utm_n": 3947083.005757
+    },
+    {
+      "image_name": "00196.jpg",
+      "condition": "day",
+      "utm_e": 382168.514448,
+      "utm_n": 3947083.005757
+    },
+    {
+      "image_name": "00197.jpg",
+      "condition": "sunset",
+      "utm_e": 382168.514448,
+      "utm_n": 3947083.005757
+    },
+    {
+      "image_name": "00198.jpg",
+      "condition": "night",
+      "utm_e": 382168.514448,
+      "utm_n": 3947083.005757
+    },
+    {
+      "image_name": "00199.jpg",
+      "condition": "day",
+      "utm_e": 382125.737688,
+      "utm_n": 3947209.486161
+    },
+    {
+      "image_name": "00200.jpg",
+      "condition": "sunset",
+      "utm_e": 382125.737688,
+      "utm_n": 3947209.486161
+    },
+    {
+      "image_name": "00201.jpg",
+      "condition": "night",
+      "utm_e": 382125.737688,
+      "utm_n": 3947209.486161
+    },
+    {
+      "image_name": "00202.jpg",
+      "condition": "day",
+      "utm_e": 382125.737688,
+      "utm_n": 3947209.486161
+    },
+    {
+      "image_name": "00203.jpg",
+      "condition": "sunset",
+      "utm_e": 382125.737688,
+      "utm_n": 3947209.486161
+    },
+    {
+      "image_name": "00204.jpg",
+      "condition": "night",
+      "utm_e": 382125.737688,
+      "utm_n": 3947209.486161
+    },
+    {
+      "image_name": "00205.jpg",
+      "condition": "day",
+      "utm_e": 382125.737688,
+      "utm_n": 3947209.486161
+    },
+    {
+      "image_name": "00206.jpg",
+      "condition": "sunset",
+      "utm_e": 382125.737688,
+      "utm_n": 3947209.486161
+    },
+    {
+      "image_name": "00207.jpg",
+      "condition": "night",
+      "utm_e": 382125.737688,
+      "utm_n": 3947209.486161
+    },
+    {
+      "image_name": "00208.jpg",
+      "condition": "day",
+      "utm_e": 382076.707981,
+      "utm_n": 3947171.529987
+    },
+    {
+      "image_name": "00209.jpg",
+      "condition": "sunset",
+      "utm_e": 382076.707981,
+      "utm_n": 3947171.529987
+    },
+    {
+      "image_name": "00210.jpg",
+      "condition": "night",
+      "utm_e": 382076.707981,
+      "utm_n": 3947171.529987
+    },
+    {
+      "image_name": "00211.jpg",
+      "condition": "day",
+      "utm_e": 382076.707981,
+      "utm_n": 3947171.529987
+    },
+    {
+      "image_name": "00212.jpg",
+      "condition": "sunset",
+      "utm_e": 382076.707981,
+      "utm_n": 3947171.529987
+    },
+    {
+      "image_name": "00213.jpg",
+      "condition": "night",
+      "utm_e": 382076.707981,
+      "utm_n": 3947171.529987
+    },
+    {
+      "image_name": "00214.jpg",
+      "condition": "day",
+      "utm_e": 382076.707981,
+      "utm_n": 3947171.529987
+    },
+    {
+      "image_name": "00215.jpg",
+      "condition": "sunset",
+      "utm_e": 382076.707981,
+      "utm_n": 3947171.529987
+    },
+    {
+      "image_name": "00216.jpg",
+      "condition": "night",
+      "utm_e": 382076.707981,
+      "utm_n": 3947171.529987
+    },
+    {
+      "image_name": "00217.jpg",
+      "condition": "day",
+      "utm_e": 382093.391831,
+      "utm_n": 3947255.39913
+    },
+    {
+      "image_name": "00218.jpg",
+      "condition": "sunset",
+      "utm_e": 382093.391831,
+      "utm_n": 3947255.39913
+    },
+    {
+      "image_name": "00219.jpg",
+      "condition": "night",
+      "utm_e": 382093.391831,
+      "utm_n": 3947255.39913
+    },
+    {
+      "image_name": "00220.jpg",
+      "condition": "day",
+      "utm_e": 382093.391831,
+      "utm_n": 3947255.39913
+    },
+    {
+      "image_name": "00221.jpg",
+      "condition": "sunset",
+      "utm_e": 382093.391831,
+      "utm_n": 3947255.39913
+    },
+    {
+      "image_name": "00222.jpg",
+      "condition": "night",
+      "utm_e": 382093.391831,
+      "utm_n": 3947255.39913
+    },
+    {
+      "image_name": "00223.jpg",
+      "condition": "day",
+      "utm_e": 382093.391831,
+      "utm_n": 3947255.39913
+    },
+    {
+      "image_name": "00224.jpg",
+      "condition": "sunset",
+      "utm_e": 382093.391831,
+      "utm_n": 3947255.39913
+    },
+    {
+      "image_name": "00225.jpg",
+      "condition": "night",
+      "utm_e": 382093.391831,
+      "utm_n": 3947255.39913
+    },
+    {
+      "image_name": "00226.jpg",
+      "condition": "day",
+      "utm_e": 382757.843,
+      "utm_n": 3946728.318678
+    },
+    {
+      "image_name": "00227.jpg",
+      "condition": "sunset",
+      "utm_e": 382757.843,
+      "utm_n": 3946728.318678
+    },
+    {
+      "image_name": "00228.jpg",
+      "condition": "night",
+      "utm_e": 382757.843,
+      "utm_n": 3946728.318678
+    },
+    {
+      "image_name": "00229.jpg",
+      "condition": "day",
+      "utm_e": 382757.843,
+      "utm_n": 3946728.318678
+    },
+    {
+      "image_name": "00230.jpg",
+      "condition": "sunset",
+      "utm_e": 382757.843,
+      "utm_n": 3946728.318678
+    },
+    {
+      "image_name": "00231.jpg",
+      "condition": "night",
+      "utm_e": 382757.843,
+      "utm_n": 3946728.318678
+    },
+    {
+      "image_name": "00232.jpg",
+      "condition": "day",
+      "utm_e": 382757.843,
+      "utm_n": 3946728.318678
+    },
+    {
+      "image_name": "00233.jpg",
+      "condition": "sunset",
+      "utm_e": 382757.843,
+      "utm_n": 3946728.318678
+    },
+    {
+      "image_name": "00234.jpg",
+      "condition": "night",
+      "utm_e": 382757.843,
+      "utm_n": 3946728.318678
+    },
+    {
+      "image_name": "00235.jpg",
+      "condition": "day",
+      "utm_e": 382867.316183,
+      "utm_n": 3946708.571926
+    },
+    {
+      "image_name": "00236.jpg",
+      "condition": "sunset",
+      "utm_e": 382867.316183,
+      "utm_n": 3946708.571926
+    },
+    {
+      "image_name": "00237.jpg",
+      "condition": "night",
+      "utm_e": 382867.316183,
+      "utm_n": 3946708.571926
+    },
+    {
+      "image_name": "00238.jpg",
+      "condition": "day",
+      "utm_e": 382867.316183,
+      "utm_n": 3946708.571926
+    },
+    {
+      "image_name": "00239.jpg",
+      "condition": "sunset",
+      "utm_e": 382867.316183,
+      "utm_n": 3946708.571926
+    },
+    {
+      "image_name": "00240.jpg",
+      "condition": "night",
+      "utm_e": 382867.316183,
+      "utm_n": 3946708.571926
+    },
+    {
+      "image_name": "00241.jpg",
+      "condition": "day",
+      "utm_e": 382867.316183,
+      "utm_n": 3946708.571926
+    },
+    {
+      "image_name": "00242.jpg",
+      "condition": "sunset",
+      "utm_e": 382867.316183,
+      "utm_n": 3946708.571926
+    },
+    {
+      "image_name": "00243.jpg",
+      "condition": "night",
+      "utm_e": 382867.316183,
+      "utm_n": 3946708.571926
+    },
+    {
+      "image_name": "00262.jpg",
+      "condition": "day",
+      "utm_e": 382794.068099,
+      "utm_n": 3946461.038607
+    },
+    {
+      "image_name": "00263.jpg",
+      "condition": "sunset",
+      "utm_e": 382794.068099,
+      "utm_n": 3946461.038607
+    },
+    {
+      "image_name": "00264.jpg",
+      "condition": "night",
+      "utm_e": 382794.068099,
+      "utm_n": 3946461.038607
+    },
+    {
+      "image_name": "00265.jpg",
+      "condition": "day",
+      "utm_e": 382794.068099,
+      "utm_n": 3946461.038607
+    },
+    {
+      "image_name": "00266.jpg",
+      "condition": "sunset",
+      "utm_e": 382794.068099,
+      "utm_n": 3946461.038607
+    },
+    {
+      "image_name": "00267.jpg",
+      "condition": "night",
+      "utm_e": 382794.068099,
+      "utm_n": 3946461.038607
+    },
+    {
+      "image_name": "00268.jpg",
+      "condition": "day",
+      "utm_e": 382794.068099,
+      "utm_n": 3946461.038607
+    },
+    {
+      "image_name": "00269.jpg",
+      "condition": "sunset",
+      "utm_e": 382794.068099,
+      "utm_n": 3946461.038607
+    },
+    {
+      "image_name": "00270.jpg",
+      "condition": "night",
+      "utm_e": 382794.068099,
+      "utm_n": 3946461.038607
+    },
+    {
+      "image_name": "00271.jpg",
+      "condition": "day",
+      "utm_e": 382576.696183,
+      "utm_n": 3946167.482195
+    },
+    {
+      "image_name": "00272.jpg",
+      "condition": "sunset",
+      "utm_e": 382576.696183,
+      "utm_n": 3946167.482195
+    },
+    {
+      "image_name": "00273.jpg",
+      "condition": "night",
+      "utm_e": 382576.696183,
+      "utm_n": 3946167.482195
+    },
+    {
+      "image_name": "00274.jpg",
+      "condition": "day",
+      "utm_e": 382576.696183,
+      "utm_n": 3946167.482195
+    },
+    {
+      "image_name": "00275.jpg",
+      "condition": "sunset",
+      "utm_e": 382576.696183,
+      "utm_n": 3946167.482195
+    },
+    {
+      "image_name": "00276.jpg",
+      "condition": "night",
+      "utm_e": 382576.696183,
+      "utm_n": 3946167.482195
+    },
+    {
+      "image_name": "00277.jpg",
+      "condition": "day",
+      "utm_e": 382576.696183,
+      "utm_n": 3946167.482195
+    },
+    {
+      "image_name": "00278.jpg",
+      "condition": "sunset",
+      "utm_e": 382576.696183,
+      "utm_n": 3946167.482195
+    },
+    {
+      "image_name": "00279.jpg",
+      "condition": "night",
+      "utm_e": 382576.696183,
+      "utm_n": 3946167.482195
+    },
+    {
+      "image_name": "00379.jpg",
+      "condition": "day",
+      "utm_e": 381654.351381,
+      "utm_n": 3946435.746214
+    },
+    {
+      "image_name": "00380.jpg",
+      "condition": "sunset",
+      "utm_e": 381654.351381,
+      "utm_n": 3946435.746214
+    },
+    {
+      "image_name": "00381.jpg",
+      "condition": "night",
+      "utm_e": 381654.351381,
+      "utm_n": 3946435.746214
+    },
+    {
+      "image_name": "00382.jpg",
+      "condition": "day",
+      "utm_e": 381654.351381,
+      "utm_n": 3946435.746214
+    },
+    {
+      "image_name": "00383.jpg",
+      "condition": "sunset",
+      "utm_e": 381654.351381,
+      "utm_n": 3946435.746214
+    },
+    {
+      "image_name": "00384.jpg",
+      "condition": "night",
+      "utm_e": 381654.351381,
+      "utm_n": 3946435.746214
+    },
+    {
+      "image_name": "00385.jpg",
+      "condition": "day",
+      "utm_e": 381654.351381,
+      "utm_n": 3946435.746214
+    },
+    {
+      "image_name": "00386.jpg",
+      "condition": "sunset",
+      "utm_e": 381654.351381,
+      "utm_n": 3946435.746214
+    },
+    {
+      "image_name": "00387.jpg",
+      "condition": "night",
+      "utm_e": 381654.351381,
+      "utm_n": 3946435.746214
+    },
+    {
+      "image_name": "00388.jpg",
+      "condition": "day",
+      "utm_e": 381807.400722,
+      "utm_n": 3946274.627715
+    },
+    {
+      "image_name": "00389.jpg",
+      "condition": "sunset",
+      "utm_e": 381807.400722,
+      "utm_n": 3946274.627715
+    },
+    {
+      "image_name": "00390.jpg",
+      "condition": "night",
+      "utm_e": 381807.400722,
+      "utm_n": 3946274.627715
+    },
+    {
+      "image_name": "00391.jpg",
+      "condition": "day",
+      "utm_e": 381807.400722,
+      "utm_n": 3946274.627715
+    },
+    {
+      "image_name": "00392.jpg",
+      "condition": "sunset",
+      "utm_e": 381807.400722,
+      "utm_n": 3946274.627715
+    },
+    {
+      "image_name": "00393.jpg",
+      "condition": "night",
+      "utm_e": 381807.400722,
+      "utm_n": 3946274.627715
+    },
+    {
+      "image_name": "00394.jpg",
+      "condition": "day",
+      "utm_e": 381807.400722,
+      "utm_n": 3946274.627715
+    },
+    {
+      "image_name": "00395.jpg",
+      "condition": "sunset",
+      "utm_e": 381807.400722,
+      "utm_n": 3946274.627715
+    },
+    {
+      "image_name": "00396.jpg",
+      "condition": "night",
+      "utm_e": 381807.400722,
+      "utm_n": 3946274.627715
+    },
+    {
+      "image_name": "00397.jpg",
+      "condition": "day",
+      "utm_e": 381904.46617,
+      "utm_n": 3946329.361939
+    },
+    {
+      "image_name": "00398.jpg",
+      "condition": "sunset",
+      "utm_e": 381904.46617,
+      "utm_n": 3946329.361939
+    },
+    {
+      "image_name": "00399.jpg",
+      "condition": "night",
+      "utm_e": 381904.46617,
+      "utm_n": 3946329.361939
+    },
+    {
+      "image_name": "00400.jpg",
+      "condition": "day",
+      "utm_e": 381904.46617,
+      "utm_n": 3946329.361939
+    },
+    {
+      "image_name": "00401.jpg",
+      "condition": "sunset",
+      "utm_e": 381904.46617,
+      "utm_n": 3946329.361939
+    },
+    {
+      "image_name": "00402.jpg",
+      "condition": "night",
+      "utm_e": 381904.46617,
+      "utm_n": 3946329.361939
+    },
+    {
+      "image_name": "00403.jpg",
+      "condition": "day",
+      "utm_e": 381904.46617,
+      "utm_n": 3946329.361939
+    },
+    {
+      "image_name": "00404.jpg",
+      "condition": "sunset",
+      "utm_e": 381904.46617,
+      "utm_n": 3946329.361939
+    },
+    {
+      "image_name": "00405.jpg",
+      "condition": "night",
+      "utm_e": 381904.46617,
+      "utm_n": 3946329.361939
+    },
+    {
+      "image_name": "00406.jpg",
+      "condition": "day",
+      "utm_e": 381996.233092,
+      "utm_n": 3946442.076585
+    },
+    {
+      "image_name": "00407.jpg",
+      "condition": "sunset",
+      "utm_e": 381996.233092,
+      "utm_n": 3946442.076585
+    },
+    {
+      "image_name": "00408.jpg",
+      "condition": "night",
+      "utm_e": 381996.233092,
+      "utm_n": 3946442.076585
+    },
+    {
+      "image_name": "00409.jpg",
+      "condition": "day",
+      "utm_e": 381996.233092,
+      "utm_n": 3946442.076585
+    },
+    {
+      "image_name": "00410.jpg",
+      "condition": "sunset",
+      "utm_e": 381996.233092,
+      "utm_n": 3946442.076585
+    },
+    {
+      "image_name": "00411.jpg",
+      "condition": "night",
+      "utm_e": 381996.233092,
+      "utm_n": 3946442.076585
+    },
+    {
+      "image_name": "00412.jpg",
+      "condition": "day",
+      "utm_e": 381996.233092,
+      "utm_n": 3946442.076585
+    },
+    {
+      "image_name": "00413.jpg",
+      "condition": "sunset",
+      "utm_e": 381996.233092,
+      "utm_n": 3946442.076585
+    },
+    {
+      "image_name": "00414.jpg",
+      "condition": "night",
+      "utm_e": 381996.233092,
+      "utm_n": 3946442.076585
+    },
+    {
+      "image_name": "00415.jpg",
+      "condition": "day",
+      "utm_e": 382063.643456,
+      "utm_n": 3946397.806309
+    },
+    {
+      "image_name": "00416.jpg",
+      "condition": "sunset",
+      "utm_e": 382063.643456,
+      "utm_n": 3946397.806309
+    },
+    {
+      "image_name": "00417.jpg",
+      "condition": "night",
+      "utm_e": 382063.643456,
+      "utm_n": 3946397.806309
+    },
+    {
+      "image_name": "00418.jpg",
+      "condition": "day",
+      "utm_e": 382063.643456,
+      "utm_n": 3946397.806309
+    },
+    {
+      "image_name": "00419.jpg",
+      "condition": "sunset",
+      "utm_e": 382063.643456,
+      "utm_n": 3946397.806309
+    },
+    {
+      "image_name": "00420.jpg",
+      "condition": "night",
+      "utm_e": 382063.643456,
+      "utm_n": 3946397.806309
+    },
+    {
+      "image_name": "00421.jpg",
+      "condition": "day",
+      "utm_e": 382063.643456,
+      "utm_n": 3946397.806309
+    },
+    {
+      "image_name": "00422.jpg",
+      "condition": "sunset",
+      "utm_e": 382063.643456,
+      "utm_n": 3946397.806309
+    },
+    {
+      "image_name": "00423.jpg",
+      "condition": "night",
+      "utm_e": 382063.643456,
+      "utm_n": 3946397.806309
+    },
+    {
+      "image_name": "00424.jpg",
+      "condition": "day",
+      "utm_e": 382147.664263,
+      "utm_n": 3946452.272275
+    },
+    {
+      "image_name": "00425.jpg",
+      "condition": "sunset",
+      "utm_e": 382147.664263,
+      "utm_n": 3946452.272275
+    },
+    {
+      "image_name": "00426.jpg",
+      "condition": "night",
+      "utm_e": 382147.664263,
+      "utm_n": 3946452.272275
+    },
+    {
+      "image_name": "00427.jpg",
+      "condition": "day",
+      "utm_e": 382147.664263,
+      "utm_n": 3946452.272275
+    },
+    {
+      "image_name": "00428.jpg",
+      "condition": "sunset",
+      "utm_e": 382147.664263,
+      "utm_n": 3946452.272275
+    },
+    {
+      "image_name": "00429.jpg",
+      "condition": "night",
+      "utm_e": 382147.664263,
+      "utm_n": 3946452.272275
+    },
+    {
+      "image_name": "00430.jpg",
+      "condition": "day",
+      "utm_e": 382147.664263,
+      "utm_n": 3946452.272275
+    },
+    {
+      "image_name": "00431.jpg",
+      "condition": "sunset",
+      "utm_e": 382147.664263,
+      "utm_n": 3946452.272275
+    },
+    {
+      "image_name": "00432.jpg",
+      "condition": "night",
+      "utm_e": 382147.664263,
+      "utm_n": 3946452.272275
+    },
+    {
+      "image_name": "00433.jpg",
+      "condition": "day",
+      "utm_e": 382216.211703,
+      "utm_n": 3946548.545206
+    },
+    {
+      "image_name": "00434.jpg",
+      "condition": "sunset",
+      "utm_e": 382216.211703,
+      "utm_n": 3946548.545206
+    },
+    {
+      "image_name": "00435.jpg",
+      "condition": "night",
+      "utm_e": 382216.211703,
+      "utm_n": 3946548.545206
+    },
+    {
+      "image_name": "00436.jpg",
+      "condition": "day",
+      "utm_e": 382216.211703,
+      "utm_n": 3946548.545206
+    },
+    {
+      "image_name": "00437.jpg",
+      "condition": "sunset",
+      "utm_e": 382216.211703,
+      "utm_n": 3946548.545206
+    },
+    {
+      "image_name": "00438.jpg",
+      "condition": "night",
+      "utm_e": 382216.211703,
+      "utm_n": 3946548.545206
+    },
+    {
+      "image_name": "00439.jpg",
+      "condition": "day",
+      "utm_e": 382216.211703,
+      "utm_n": 3946548.545206
+    },
+    {
+      "image_name": "00440.jpg",
+      "condition": "sunset",
+      "utm_e": 382216.211703,
+      "utm_n": 3946548.545206
+    },
+    {
+      "image_name": "00441.jpg",
+      "condition": "night",
+      "utm_e": 382216.211703,
+      "utm_n": 3946548.545206
+    },
+    {
+      "image_name": "00442.jpg",
+      "condition": "day",
+      "utm_e": 382436.169303,
+      "utm_n": 3946523.670133
+    },
+    {
+      "image_name": "00443.jpg",
+      "condition": "sunset",
+      "utm_e": 382436.169303,
+      "utm_n": 3946523.670133
+    },
+    {
+      "image_name": "00444.jpg",
+      "condition": "night",
+      "utm_e": 382436.169303,
+      "utm_n": 3946523.670133
+    },
+    {
+      "image_name": "00445.jpg",
+      "condition": "day",
+      "utm_e": 382436.169303,
+      "utm_n": 3946523.670133
+    },
+    {
+      "image_name": "00446.jpg",
+      "condition": "sunset",
+      "utm_e": 382436.169303,
+      "utm_n": 3946523.670133
+    },
+    {
+      "image_name": "00447.jpg",
+      "condition": "night",
+      "utm_e": 382436.169303,
+      "utm_n": 3946523.670133
+    },
+    {
+      "image_name": "00448.jpg",
+      "condition": "day",
+      "utm_e": 382436.169303,
+      "utm_n": 3946523.670133
+    },
+    {
+      "image_name": "00449.jpg",
+      "condition": "sunset",
+      "utm_e": 382436.169303,
+      "utm_n": 3946523.670133
+    },
+    {
+      "image_name": "00450.jpg",
+      "condition": "night",
+      "utm_e": 382436.169303,
+      "utm_n": 3946523.670133
+    },
+    {
+      "image_name": "00685.jpg",
+      "condition": "day",
+      "utm_e": 381523.710477,
+      "utm_n": 3946790.154725
+    },
+    {
+      "image_name": "00686.jpg",
+      "condition": "sunset",
+      "utm_e": 381523.710477,
+      "utm_n": 3946790.154725
+    },
+    {
+      "image_name": "00687.jpg",
+      "condition": "night",
+      "utm_e": 381523.710477,
+      "utm_n": 3946790.154725
+    },
+    {
+      "image_name": "00688.jpg",
+      "condition": "day",
+      "utm_e": 381523.710477,
+      "utm_n": 3946790.154725
+    },
+    {
+      "image_name": "00689.jpg",
+      "condition": "sunset",
+      "utm_e": 381523.710477,
+      "utm_n": 3946790.154725
+    },
+    {
+      "image_name": "00690.jpg",
+      "condition": "night",
+      "utm_e": 381523.710477,
+      "utm_n": 3946790.154725
+    },
+    {
+      "image_name": "00691.jpg",
+      "condition": "day",
+      "utm_e": 381523.710477,
+      "utm_n": 3946790.154725
+    },
+    {
+      "image_name": "00692.jpg",
+      "condition": "sunset",
+      "utm_e": 381523.710477,
+      "utm_n": 3946790.154725
+    },
+    {
+      "image_name": "00693.jpg",
+      "condition": "night",
+      "utm_e": 381523.710477,
+      "utm_n": 3946790.154725
+    },
+    {
+      "image_name": "00730.jpg",
+      "condition": "day",
+      "utm_e": 381548.012947,
+      "utm_n": 3946636.626665
+    },
+    {
+      "image_name": "00731.jpg",
+      "condition": "sunset",
+      "utm_e": 381548.012947,
+      "utm_n": 3946636.626665
+    },
+    {
+      "image_name": "00732.jpg",
+      "condition": "night",
+      "utm_e": 381548.012947,
+      "utm_n": 3946636.626665
+    },
+    {
+      "image_name": "00733.jpg",
+      "condition": "day",
+      "utm_e": 381548.012947,
+      "utm_n": 3946636.626665
+    },
+    {
+      "image_name": "00734.jpg",
+      "condition": "sunset",
+      "utm_e": 381548.012947,
+      "utm_n": 3946636.626665
+    },
+    {
+      "image_name": "00735.jpg",
+      "condition": "night",
+      "utm_e": 381548.012947,
+      "utm_n": 3946636.626665
+    },
+    {
+      "image_name": "00736.jpg",
+      "condition": "day",
+      "utm_e": 381548.012947,
+      "utm_n": 3946636.626665
+    },
+    {
+      "image_name": "00737.jpg",
+      "condition": "sunset",
+      "utm_e": 381548.012947,
+      "utm_n": 3946636.626665
+    },
+    {
+      "image_name": "00738.jpg",
+      "condition": "night",
+      "utm_e": 381548.012947,
+      "utm_n": 3946636.626665
+    }
+  ],
+  "local_validation": {
+    "dataset_root": "/home/admin123/github/datasets/tokyo247",
+    "query_images_present": 315,
+    "queries_with_25m_positives": 315,
+    "query_csv_vs_primary_utm_max_difference_m": 0.006147174347969787,
+    "database_folder_vs_primary_utm_max_difference_m": 0.007071068065405115,
+    "official_12_image_index_groups_match_parent_plus_panorama_id": true,
+    "query_csv_aggregate_sha256": "88d1000f62932dd72da87283dd6d5dc410a04c541045e09044fd041e7aa9b787",
+    "image_validation": "File existence and original CSV identity/coordinates; upstream JPEG content checksums were not compared",
+    "positive_set_boundary_audit": {
+      "queries_checked": 315,
+      "radius_m": 25,
+      "primary_query_utm_used": true,
+      "primary_vs_local_database_positive_sets_equal": true,
+      "queries_with_changed_positive_set": 0,
+      "different_query_indices": [],
+      "database_coordinates_order": "aligned by original PNG filename to official Patch-NetVLAD database index",
+      "primary_positive_image_pairs": 37260,
+      "local_positive_image_pairs": 37260
+    },
+    "database_relative_inventory_sha256": "73efc45d3b14e2159ee22a5ff283fa101dbc1bc700ae4a83fb5bebb241ed7bde",
+    "database_relative_inventory_rows": 75984,
+    "database_inventory_hash_definition": "Sorted crop paths relative to database_gsv_vga, each followed by a newline, UTF-8 SHA256"
+  },
+  "retrieved_at_utc": "2026-10-14T04:07:49.752272+00:00"
+}

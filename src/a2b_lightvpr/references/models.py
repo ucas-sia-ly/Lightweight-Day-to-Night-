@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from collections import Counter
 import hashlib
 import importlib
 import json
@@ -40,6 +41,7 @@ class SuiteRow:
     northing: float
     yaw_deg: float = 0.0
     condition: str = "night"
+    retrieval_group: str | None = None
 
 
 def query_protocol_fingerprint(
@@ -62,6 +64,13 @@ def query_protocol_fingerprint(
                     )
                 ).encode("utf-8")
             )
+            digest.update(b"\n")
+    # Ordinary historical protocols retain their exact identity. Only grouped
+    # retrieval adds a ranking rule and the row-to-panorama assignment.
+    if any(getattr(row, "retrieval_group", None) is not None for row in database):
+        digest.update(b"ranking=best_crop_per_panorama_v1\n")
+        for row in database:
+            digest.update(str(getattr(row, "retrieval_group", None)).encode("utf-8"))
             digest.update(b"\n")
     return digest.hexdigest()
 
@@ -695,6 +704,116 @@ def _tokyo_rows(root: Path, condition: str):
     return database, queries
 
 
+TOKYO247_PROTOCOL_DIR = Path(__file__).resolve().parents[1] / "protocols"
+TOKYO247_PROTOCOLS = {"tokyo247", "tokyo247_night", "tokyo247_day", "tokyo247_sunset"}
+
+
+def _tokyo247_protocol_spec():
+    names_path = TOKYO247_PROTOCOL_DIR / "tokyo247_query_names.txt"
+    provenance_path = TOKYO247_PROTOCOL_DIR / "tokyo247_provenance.json"
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    names = names_path.read_text(encoding="utf-8").splitlines()
+    if (len(names) != 315 or len(set(names)) != 315
+            or any(Path(name).name != name or not name.endswith(".jpg") for name in names)):
+        raise ValueError("Tokyo247 official query list requires 315 unique JPG basenames")
+    if file_sha256(names_path) != provenance.get("query_names_sha256"):
+        raise ValueError("Tokyo247 query-list SHA256 does not match its provenance")
+    if (provenance.get("queries") != 315 or provenance.get("database_images") != 75984
+            or provenance.get("database_panoramas") != 6332 or provenance.get("crops_per_panorama") != 12
+            or provenance.get("positive_radius_m") != 25.0
+            or provenance.get("condition_counts") != {"day": 105, "night": 105, "sunset": 105}):
+        raise ValueError("Tokyo247 provenance does not describe the fixed 315-query protocol")
+    metadata = provenance.get("query_metadata", [])
+    if len(metadata) != 315 or [item.get("image_name") for item in metadata] != names:
+        raise ValueError("Tokyo247 primary Query metadata must match the official list order")
+    if Counter(item.get("condition") for item in metadata) != provenance["condition_counts"]:
+        raise ValueError("Tokyo247 requires 105 Queries per condition")
+    for item in metadata:
+        if not np.isfinite([float(item["utm_e"]), float(item["utm_n"])]).all():
+            raise ValueError("Tokyo247 primary Query coordinates must be finite")
+    return names, provenance
+
+
+def _tokyo247_rows(root: Path, dataset: str):
+    """Official 315-name selection and primary NetVLAD panorama NMS grouping.
+
+    Local CSV coordinates are checked against primary GT metadata; use the
+    primary Query UTM values. Database folder coordinates are release-rounded.
+    This verifies names/metadata, not byte identity with official v2 imagery.
+    """
+    if dataset not in TOKYO247_PROTOCOLS:
+        raise ValueError(f"Unsupported Tokyo247 protocol: {dataset}")
+    names, provenance = _tokyo247_protocol_spec()
+    expected = {item["image_name"]: item for item in provenance["query_metadata"]}
+    selected = {}
+    for metadata in sorted((root / "queries").glob("*.csv")):
+        with metadata.open(newline="", encoding="utf-8") as handle:
+            values = next(csv.reader(handle), [])
+        if not values or values[0] not in expected:
+            continue
+        name = values[0]
+        if name in selected:
+            raise ValueError(f"Duplicate Tokyo247 Query basename: {name}")
+        if len(values) < 9:
+            raise ValueError(f"Incomplete Tokyo247 Query metadata: {metadata}")
+        item = expected[name]
+        condition = {"D": "day", "N": "night", "S": "sunset"}.get(values[5])
+        if condition != item["condition"]:
+            raise ValueError(f"Tokyo247 Query condition differs from primary metadata: {name}")
+        local_xy = np.asarray([float(values[7]), float(values[8])])
+        primary_xy = np.asarray([float(item["utm_e"]), float(item["utm_n"])])
+        if not np.isfinite(local_xy).all() or not np.allclose(local_xy, primary_xy, rtol=0, atol=0.02):
+            raise ValueError(f"Tokyo247 Query coordinates differ from primary GT: {name}")
+        image = root / "queries" / name
+        if not image.is_file():
+            raise FileNotFoundError(f"Tokyo247 Query image missing: {image}")
+        selected[name] = SuiteRow(str(image.resolve()), *map(float, primary_xy), condition=condition)
+    missing = sorted(set(names) - set(selected))
+    if missing:
+        raise ValueError(f"Tokyo247 official Query metadata missing for {len(missing)} images: {missing[:5]}")
+    if Counter(row.condition for row in selected.values()) != {"day": 105, "night": 105, "sunset": 105}:
+        raise ValueError("Tokyo247 local metadata requires 105 Queries per condition")
+
+    database, panoramas, seen_paths = [], {}, set()
+    inventory_digest = hashlib.sha256()
+    database_root = root / "database_gsv_vga"
+    for path in sorted(database_root.glob("*/*/*.png")):
+        if not path.is_file():
+            continue
+        inventory_digest.update((path.relative_to(database_root).as_posix() + "\n").encode("utf-8"))
+        xy = path.parent.name.split("_")
+        parts = path.stem.rsplit("_", 2)
+        if len(xy) != 2 or len(parts) != 3 or parts[1] != "012":
+            raise ValueError(f"Malformed Tokyo247 Database panorama crop: {path}")
+        coordinates = [float(xy[0]), float(xy[1])]
+        angle = int(parts[2])
+        if not np.isfinite(coordinates).all() or angle not in range(0, 360, 30):
+            raise ValueError(f"Invalid Tokyo247 Database coordinates/crop angle: {path}")
+        source = str(path.resolve())
+        if source in seen_paths:
+            raise ValueError(f"Duplicate Tokyo247 Database image: {source}")
+        seen_paths.add(source)
+        # Some UTM folders contain two or three distinct panoramas. Group by
+        # panorama ID as well, matching primary index order's blocks of 12.
+        group = f"{path.parent.relative_to(database_root).as_posix()}/{parts[0]}"
+        angles = panoramas.setdefault(group, set())
+        if angle in angles:
+            raise ValueError(f"Duplicate Tokyo247 panorama crop angle: {path}")
+        angles.add(angle)
+        database.append(SuiteRow(source, *coordinates, condition="day", retrieval_group=group))
+    if (len(database) != provenance["database_images"] or len(panoramas) != provenance["database_panoramas"]
+            or any(len(angles) != 12 for angles in panoramas.values())):
+        raise ValueError("Tokyo247 Database requires all 75984 crops in 6332 panoramas of 12")
+    expected_inventory = provenance.get("local_validation", {}).get("database_relative_inventory_sha256")
+    if not expected_inventory or inventory_digest.hexdigest() != expected_inventory:
+        raise ValueError("Tokyo247 Database inventory differs from the audited primary protocol")
+    condition = None if dataset == "tokyo247" else dataset.removeprefix("tokyo247_")
+    queries = [selected[name] for name in names if condition is None or selected[name].condition == condition]
+    if len(queries) != (315 if condition is None else 105):
+        raise ValueError(f"Tokyo247 Query count is not the fixed protocol count: {dataset}")
+    return database, queries
+
+
 def suite_rows(config: ExperimentConfig, dataset: str, split: str = "test"):
     if dataset in {"robotcar_seasons_night", "robotcar_seasons_day"}:
         if split != "test":
@@ -716,10 +835,31 @@ def suite_rows(config: ExperimentConfig, dataset: str, split: str = "test"):
         return _msls_rows(Path(config.data.msls_root), "day")
     if dataset in {"tokyo_night", "tokyo_sunset", "tokyo_day"}:
         return _tokyo_rows(Path(config.data.tokyo_root), dataset)
+    if dataset in TOKYO247_PROTOCOLS:
+        if split != "test":
+            raise ValueError("Tokyo247 official Query protocol is test-only")
+        return _tokyo247_rows(Path(config.data.tokyo_root), dataset)
     raise ValueError(f"Unsupported suite dataset: {dataset}")
 
 
 def suite_protocol_metadata(config, dataset):
+    if dataset in TOKYO247_PROTOCOLS:
+        _, provenance = _tokyo247_protocol_spec()
+        return {
+            "public_protocol": "tokyo247_official_315_query_names",
+            "query_names_sha256": provenance["query_names_sha256"],
+            "official_query_count": 315 if dataset == "tokyo247" else 105,
+            "positive_radius_m": 25.0,
+            "ranking_rule": "best_crop_per_panorama_v1",
+            "crops_per_panorama": 12,
+            "source_urls_and_sha256": provenance["source_urls_and_sha256"],
+            "panorama_nms_sources": provenance["panorama_nms_sources"],
+            "query_coordinates": "primary_ground_truth_utm",
+            "database_coordinates": "local_release_rounded_folder_utm",
+            "official_image_bytes_verified": False,
+            "positive_set_boundary_audit": provenance.get("local_validation", {}).get("positive_set_boundary_audit", {}),
+            "database_relative_inventory_sha256": provenance["local_validation"]["database_relative_inventory_sha256"],
+        }
     if dataset in {"robotcar_seasons_night", "robotcar_seasons_day"}:
         from ..robotcar_seasons import V2_README, _metadata_hashes
         return {
@@ -735,11 +875,28 @@ def suite_protocol_metadata(config, dataset):
 def evaluate_dual_encoder(
     database_model, query_model, database, queries, transform, radius: float | None,
     yaw: float | None, recalls: tuple[int, ...], device, batch_size: int, workers: int,
+    database_descriptor_cache: dict | None = None,
 ):
-    database_descriptors = extract_descriptors(database_model, database, transform, device, batch_size, workers)
+    # This cache belongs to one suite invocation with immutable model weights
+    # and preprocessing. Keep source order in the key; poses and panorama
+    # groups still come from each protocol's rows when computing its metrics.
+    cache_key = (id(database_model), id(transform), tuple(row.source_path for row in database))
+    if database_descriptor_cache is not None and cache_key in database_descriptor_cache:
+        database_descriptors = database_descriptor_cache[cache_key]
+    else:
+        if database_descriptor_cache is not None:
+            database_descriptor_cache.clear()
+        database_descriptors = extract_descriptors(database_model, database, transform, device, batch_size, workers)
+        # One recent gallery, capped at 256 MiB. Large reference descriptors
+        # must not accumulate across protocols on a 32 GiB workstation.
+        if database_descriptor_cache is not None and database_descriptors.nbytes <= 256 * 1024**2:
+            database_descriptor_cache[cache_key] = database_descriptors
     query_descriptors = extract_descriptors(query_model, queries, transform, device, batch_size, workers)
+    groups = [getattr(row, "retrieval_group", None) for row in database]
+    grouped = any(group is not None for group in groups)
     if any(not getattr(row, "ground_truth_available", True) for row in (*database, *queries)):
-        scores, indices = search_topk_descriptors(database_descriptors, query_descriptors, max(recalls))
+        options = {"database_groups": groups} if grouped else {}
+        scores, indices = search_topk_descriptors(database_descriptors, query_descriptors, max(recalls), **options)
         predictions = []
         for query, query_scores, query_indices in zip(queries, scores, indices):
             predictions.append({
@@ -765,6 +922,7 @@ def evaluate_dual_encoder(
         ]
     else:
         positives = positive_indices(database, queries, radius, yaw)
-    metrics = retrieval_metrics(database_descriptors, query_descriptors, positives, recalls)
+    options = {"database_groups": groups} if grouped else {}
+    metrics = retrieval_metrics(database_descriptors, query_descriptors, positives, recalls, **options)
     metrics.update(ground_truth_available=True, evaluation_status="measured")
     return metrics

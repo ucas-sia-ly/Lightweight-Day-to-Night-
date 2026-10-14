@@ -103,6 +103,12 @@ class VPRConfig:
     sampler: str = "weighted"
     dataset_epoch_quotas: dict[str, int] = field(default_factory=dict)
     train_domains: str = "day_fake"
+    training_objective: str = "classification"
+    input_transform: str = "fit_pad"
+    salad_dropout: float = 0.0
+    metric_augmentation_probability: float = 0.5
+    metric_within_city: bool = True
+    require_cuda: bool = False
     cross_domain_aux: str = "none"
     database_encoder: str = "adapted"
     scheduler: str = "constant"
@@ -149,6 +155,7 @@ class EvalConfig:
     datasets: tuple[str, ...] = ("msls_day_val",)
     database_domain: str = "day"
     fake_database_manifest: str = ""
+    batch_size: int = 0
 
 
 @dataclass(frozen=True)
@@ -255,6 +262,43 @@ def validate_config(config: ExperimentConfig) -> None:
         raise ValueError("vpr.aggregator must be gem, convap, mixvpr, netvlad, salad, or boq")
     if config.vpr.loss_profile != "v2":
         raise ValueError("The single-run VPR workflow requires loss_profile=v2")
+    if config.vpr.training_objective not in {"classification", "multi_similarity"}:
+        raise ValueError("vpr.training_objective must be classification or multi_similarity")
+    if isinstance(config.evaluation.batch_size, bool) or not isinstance(config.evaluation.batch_size, int) or config.evaluation.batch_size < 0:
+        raise ValueError("evaluation.batch_size must be a non-negative integer (0 uses the training-derived default)")
+    if config.vpr.input_transform not in {"fit_pad", "resize"}:
+        raise ValueError("vpr.input_transform must be fit_pad or resize")
+    if not math.isfinite(config.vpr.salad_dropout) or not 0 <= config.vpr.salad_dropout < 1:
+        raise ValueError("vpr.salad_dropout must be finite and in [0,1)")
+    if not math.isfinite(config.vpr.metric_augmentation_probability) or not 0 <= config.vpr.metric_augmentation_probability <= 1:
+        raise ValueError("metric_augmentation_probability must be finite and in [0,1]")
+    if not isinstance(config.vpr.metric_within_city, bool):
+        raise ValueError("metric_within_city must be a boolean")
+    if not isinstance(config.vpr.require_cuda, bool):
+        raise ValueError("vpr.require_cuda must be a boolean")
+    metric_training = config.vpr.training_objective == "multi_similarity"
+    if metric_training:
+        cfg = config.vpr
+        for name in ("pk_places_per_batch", "pk_images_per_place", "min_class_images", "batch_size", "samples_per_epoch"):
+            value = getattr(cfg, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"MultiSimilarity {name} must be a positive integer")
+        for counts in (cfg.min_class_images_by_dataset, cfg.dataset_epoch_quotas):
+            for name, value in counts.items():
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise ValueError(f"MultiSimilarity dataset count {name} must be a positive integer")
+        if cfg.model_family != "salad":
+            raise ValueError("MultiSimilarity mainline requires the standard SALAD model")
+        if cfg.cross_domain_aux != "none" or cfg.classifier_warmup_epochs != 0:
+            raise ValueError("MultiSimilarity requires no CDND or classifier warmup")
+        if cfg.train_domains not in {"day_only", "day_aug"}:
+            raise ValueError("MultiSimilarity requires source-only day_only or day_aug training")
+        if cfg.sampler != "pk_balanced" or cfg.pk_places_per_batch < 2 or cfg.pk_images_per_place < 2:
+            raise ValueError("MultiSimilarity requires PK sampling with P>=2 and K>=2")
+        if set(cfg.datasets) != {"gsv_cities"}:
+            raise ValueError("MultiSimilarity currently requires trusted GSV-Cities place labels")
+        if cfg.min_class_images < 4 or any(value < 4 for value in cfg.min_class_images_by_dataset.values()):
+            raise ValueError("MultiSimilarity requires at least four distinct GSV source images per place")
     if config.vpr.scheduler not in {"constant", "cosine", "plateau"}:
         raise ValueError("vpr.scheduler must be constant, cosine, or plateau")
     if config.vpr.relation_teacher not in {"none", "salad", "boq"}:
@@ -344,22 +388,28 @@ def validate_config(config: ExperimentConfig) -> None:
     if config.vpr.model_family == "salad":
         if config.vpr.aggregator != "salad" or config.vpr.descriptor_dim != 544:
             raise ValueError("Compact SALAD requires salad aggregation and 544 dimensions")
-        if config.vpr.backbone_name != "dinov2_vits14_reg":
-            raise ValueError("Compact SALAD student requires dinov2_vits14_reg")
+        if config.vpr.backbone_name not in {"dinov2_vits14", "dinov2_vits14_reg"}:
+            raise ValueError("Compact SALAD student requires DINOv2-S/14")
         if not config.vpr.backbone_repo or not config.vpr.backbone_checkpoint:
             raise ValueError("Compact SALAD requires backbone_repo and backbone_checkpoint")
-        if not 0 < config.vpr.backbone_trainable_blocks <= 12:
-            raise ValueError("Compact SALAD requires 1--12 trainable backbone blocks")
+        if isinstance(config.vpr.backbone_trainable_blocks, bool) or not isinstance(config.vpr.backbone_trainable_blocks, int):
+            raise ValueError("Compact SALAD trainable block count must be an integer")
+        if not 0 <= config.vpr.backbone_trainable_blocks <= 12:
+            raise ValueError("Compact SALAD requires 0--12 trainable backbone blocks")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
+               for value in (config.vpr.image_height, config.vpr.image_width)):
+            raise ValueError("Compact SALAD input dimensions must be positive integers")
+        if config.vpr.image_height % 14 or config.vpr.image_width % 14 or (config.vpr.image_height // 14) * (config.vpr.image_width // 14) <= 16:
+            raise ValueError("Compact SALAD requires 14-multiple input with more patches than clusters")
     if config.vpr.model_family == "netvlad":
         if config.vpr.aggregator != "netvlad" or config.vpr.descriptor_dim != 4096:
             raise ValueError("NetVLAD adaptation requires netvlad aggregation and 4096 dimensions")
         if config.vpr.num_clusters != 64:
             raise ValueError("The official NetVLAD checkpoint requires 64 clusters")
-    if (config.vpr.image_height, config.vpr.image_width) not in {
+    if config.vpr.model_family != "salad" and (config.vpr.image_height, config.vpr.image_width) not in {
         (256, 384),
         (320, 480),
         (320, 320),
-        (322, 322),
         (322, 322),
     }:
         raise ValueError("VPR resolution must be 256x384, 320x480, or 320x320")
@@ -422,20 +472,7 @@ def validate_config(config: ExperimentConfig) -> None:
         config.vpr.image_height, config.vpr.image_width
     ) != (320, 320):
         raise ValueError("Official MixVPR adaptation requires 320x320 input")
-    if config.vpr.model_family == "salad":
-        if (config.vpr.image_height, config.vpr.image_width) != (322, 322):
-            raise ValueError("Compact SALAD requires 322x322 input")
-        if config.vpr.backbone_name != "dinov2_vits14_reg":
-            raise ValueError("Compact SALAD requires dinov2_vits14_reg")
-        if not config.vpr.backbone_repo or not config.vpr.backbone_checkpoint:
-            raise ValueError("Compact SALAD requires a backbone repo and checkpoint")
-        if not 0 <= config.vpr.backbone_trainable_blocks <= 12:
-            raise ValueError("backbone_trainable_blocks must be between 0 and 12")
-    if config.vpr.model_family == "salad" and (
-        config.vpr.image_height, config.vpr.image_width
-    ) != (322, 322):
-        raise ValueError("Compact SALAD requires 322x322 input")
-    if config.vpr.model_family != "stable_night_salad" and config.vpr.train_domains not in {"day", "day_fake"}:
+    if config.vpr.model_family != "stable_night_salad" and not metric_training and config.vpr.train_domains not in {"day", "day_fake"}:
         raise ValueError("vpr.train_domains must be day or day_fake")
     if config.vpr.cross_domain_aux not in {"none", "cross_domain_relation"}:
         raise ValueError("cross_domain_aux must be none or cross_domain_relation")
@@ -485,9 +522,9 @@ def validate_config(config: ExperimentConfig) -> None:
         raise ValueError("evaluation.datasets must contain unique validation datasets")
     if set(config.evaluation.datasets) - {"msls_day_val", "svox_day_val"}:
         raise ValueError("Training validation requires public msls_day_val or svox_day_val; test datasets cannot select checkpoints")
-    if config.vpr.model_family == "stable_night_salad":
+    if config.vpr.model_family == "stable_night_salad" or metric_training:
         if config.evaluation.database_domain not in {"day", "fake_night"}:
-            raise ValueError("StableNight database_domain must be day or fake_night")
+            raise ValueError("SALAD database_domain must be day or fake_night")
         if config.evaluation.database_domain == "fake_night" and not config.evaluation.fake_database_manifest:
             raise ValueError("Fake Night Database requires an explicit fake_database_manifest")
     elif config.evaluation.database_domain != "day":

@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
+
+import torch
 
 from .config import apply_overrides, load_config
 from .data import audit_data
 from .resource_audit import audit_resources
 from .robotcar_seasons import (
-    CAMERAS, DAY_CONDITIONS, NIGHT_CONDITIONS, audit_robotcar_seasons, default_robotcar_seasons_root,
+    CAMERAS, DAY_CONDITIONS, NIGHT_CONDITIONS, audit_robotcar_seasons,
+    default_robotcar_seasons_root,
 )
-from .generator.trainer import train_generator
-from .generator.translate import translate_training_set
-from .prepare import build_manifests
-from .reporting.multiseed_summary import summarize_cdnd_multiseed
-from .reporting.figures import plot_accuracy_efficiency
-from .reporting.paired_summary import summarize_paired_vpr
-from .qualitative.export import export_qualitative_top1
 from .references.models import (
     audit_reference_models,
     benchmark_reference_models,
@@ -23,15 +21,10 @@ from .references.models import (
     validate_reference_resources,
 )
 from .references.coverage import audit_reference_coverage
-from .references.pca import fit_reference_pca
 from .references.suite import evaluate_reference_suite
 from .runtime import benchmark_model
-from .reporting.seed0_summary import summarize_cdnd_seed0
-from .references.training import fit_anyloc_small_vocabulary, train_boq_small
-from .references.summary import summarize_small_references
 from .trained_suite import SUITE_PROTOCOLS, evaluate_trained_suite
-from .vpr.teacher_cache import cache_relation_teacher
-from .vpr.trainer import export_vpr_inference_checkpoint, train_vpr
+from .vpr.trainer import export_vpr_initial_checkpoint, export_vpr_inference_checkpoint, train_vpr
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -41,9 +34,7 @@ def _parser() -> argparse.ArgumentParser:
     def common(name: str):
         command = commands.add_parser(name)
         command.add_argument("--config", required=True)
-        command.add_argument(
-            "--set", action="append", default=[], metavar="SECTION.FIELD=VALUE"
-        )
+        command.add_argument("--set", action="append", default=[], metavar="SECTION.FIELD=VALUE")
         return command
 
     audit = common("audit-data")
@@ -52,37 +43,26 @@ def _parser() -> argparse.ArgumentParser:
     resources.add_argument("--output", default="")
     resources.add_argument("--skip-images", action="store_true")
 
-    def seasons_options(command):
-        command.add_argument("--data-root", default=str(default_robotcar_seasons_root()))
-        command.add_argument("--conditions", nargs="+", choices=NIGHT_CONDITIONS + DAY_CONDITIONS, default=list(NIGHT_CONDITIONS))
-        command.add_argument("--protocol", choices=["original", "v2"], default="v2")
-        command.add_argument("--cameras", nargs="+", choices=CAMERAS, default=None)
-        command.add_argument("--output", default="")
-
     seasons_audit = commands.add_parser("audit-robotcar-seasons")
-    seasons_options(seasons_audit)
+    seasons_audit.add_argument("--data-root", default=str(default_robotcar_seasons_root()))
+    seasons_audit.add_argument("--conditions", nargs="+", choices=NIGHT_CONDITIONS + DAY_CONDITIONS, default=list(NIGHT_CONDITIONS))
+    seasons_audit.add_argument("--protocol", choices=["original", "v2"], default="v2")
+    seasons_audit.add_argument("--cameras", nargs="+", choices=CAMERAS, default=None)
+    seasons_audit.add_argument("--output", default="")
 
-    prepare = commands.add_parser("prepare-data")
-    prepare.add_argument("--data-root", required=True)
-    prepare.add_argument("--output-dir", default="data/manifests_clean_night")
-    prepare.add_argument("--skip-darkdriving-decode", action="store_true")
-    prepare.add_argument("--clip-checkpoint", default="/home/admin123/.cache/clip/ViT-B-32.pt")
-    prepare.add_argument("--robotcar-training-dir", default=None,
-                         help="Directory of independent RobotCar training manifests")
-
-    generator = common("train-generator")
-    generator.add_argument("--smoke-steps", type=int, default=0)
-    translate = common("translate-train")
-    translate.add_argument("--checkpoint", default="")
-    translate.add_argument("--limit", type=int, default=0)
+    gsv = commands.add_parser("prepare-gsv-metric")
+    gsv.add_argument("--data-root", required=True)
+    gsv.add_argument("--output-dir", default="data/manifests_gsv_metric")
+    gsv.add_argument("--min-class-images", type=int, default=4)
 
     vpr = common("train-vpr")
     vpr.add_argument("--smoke-epochs", type=int, default=0)
-    common("cache-vpr-teacher")
 
     export = common("export-vpr-inference")
     export.add_argument("--training-checkpoint", required=True)
     export.add_argument("--output", required=True)
+    initial_export = common("export-vpr-initial")
+    initial_export.add_argument("--output", required=True)
 
     trained = common("evaluate-trained-suite")
     trained.add_argument("--checkpoint", required=True)
@@ -96,30 +76,6 @@ def _parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--warmup", type=int, default=100)
     benchmark.add_argument("--iterations", type=int, default=1000)
 
-    summary = commands.add_parser("summarize-cdnd-seed0")
-    summary.add_argument("--baseline", action="append", required=True, metavar="DIM=JSON")
-    summary.add_argument("--candidate", action="append", required=True, metavar="DIM=JSON")
-    summary.add_argument("--output", required=True)
-
-    multi_summary = commands.add_parser("summarize-cdnd-multiseed")
-    multi_summary.add_argument("--baseline", action="append", required=True, metavar="SEED=JSON")
-    multi_summary.add_argument("--candidate", action="append", required=True, metavar="SEED=JSON")
-    multi_summary.add_argument("--ablation", action="append", required=True, metavar="NAME=JSON")
-    multi_summary.add_argument("--output", required=True)
-
-    paired_summary = commands.add_parser("summarize-paired-vpr")
-    paired_summary.add_argument("--baseline", required=True)
-    paired_summary.add_argument("--candidate", required=True)
-    paired_summary.add_argument("--label", required=True)
-    paired_summary.add_argument("--output", required=True)
-
-    paper_plot = commands.add_parser("plot-paper-efficiency")
-    paper_plot.add_argument("--student-summary", required=True)
-    paper_plot.add_argument("--reference-root", default="runs/reference")
-    paper_plot.add_argument("--resource-summary", action="append", required=True)
-    paper_plot.add_argument("--compact-summary")
-    paper_plot.add_argument("--output", required=True)
-
     audit_reference = commands.add_parser("audit-reference-models")
     audit_reference.add_argument("--config", required=True)
     audit_reference.add_argument("--output", default="runs/reference/audit.json")
@@ -131,42 +87,7 @@ def _parser() -> argparse.ArgumentParser:
     reference_benchmark.add_argument("--models", nargs="+", default=["all"])
     reference_benchmark.add_argument("--warmup", type=int, default=20)
     reference_benchmark.add_argument("--iterations", type=int, default=100)
-    reference_benchmark.add_argument(
-        "--output", default="runs/reference/resource_benchmark.json"
-    )
-
-    fit_pca = common("fit-reference-pca")
-    fit_pca.add_argument("--registry", required=True)
-    fit_pca.add_argument("--model", required=True)
-    fit_pca.add_argument("--output", required=True)
-    fit_pca.add_argument("--cache", required=True)
-    fit_pca.add_argument("--components", type=int, default=512)
-    fit_pca.add_argument("--samples", type=int, default=20_000)
-    fit_pca.add_argument("--seed", type=int, default=0)
-    fit_pca.add_argument("--batch-size", type=int, default=16)
-    fit_pca.add_argument("--workers", type=int, default=4)
-
-    boq_small = commands.add_parser("train-boq-small")
-    boq_small.add_argument("--config", required=True)
-    boq_small.add_argument("--smoke-steps", type=int, default=0)
-
-    anyloc_vocab = commands.add_parser("fit-anyloc-small-vocabulary")
-    anyloc_vocab.add_argument("--registry", required=True)
-    anyloc_vocab.add_argument("--model", required=True)
-    anyloc_vocab.add_argument("--output", required=True)
-    anyloc_vocab.add_argument("--samples", type=int, default=20_000)
-    anyloc_vocab.add_argument("--patches-per-image", type=int, default=32)
-    anyloc_vocab.add_argument("--seed", type=int, default=0)
-    anyloc_vocab.add_argument("--batch-size", type=int, default=16)
-    anyloc_vocab.add_argument("--workers", type=int, default=4)
-
-    small_summary = commands.add_parser("summarize-small-references")
-    small_summary.add_argument("--registry", required=True)
-    small_summary.add_argument("--reference-root", default="runs/reference")
-    small_summary.add_argument("--resources", action="append", required=True)
-    small_summary.add_argument("--models", nargs="+", default=["all"])
-    small_summary.add_argument("--paired-summary", default="")
-    small_summary.add_argument("--output", required=True)
+    reference_benchmark.add_argument("--output", default="runs/reference/resource_benchmark.json")
 
     validate_resources = commands.add_parser("validate-reference-resources")
     validate_resources.add_argument("--registry", required=True)
@@ -181,9 +102,7 @@ def _parser() -> argparse.ArgumentParser:
 
     reference = common("evaluate-reference-suite")
     reference.add_argument("--model", required=True)
-    reference.add_argument(
-        "--database-encoder", choices=["original", "adapted"], default="original"
-    )
+    reference.add_argument("--database-encoder", choices=["original", "adapted"], default="original")
     reference.add_argument("--transform", choices=["native", "unified"], default="unified")
     reference.add_argument(
         "--datasets", nargs="+", default=["all"],
@@ -192,186 +111,70 @@ def _parser() -> argparse.ArgumentParser:
     reference.add_argument("--output-dir", default="")
     reference.add_argument("--batch-size", type=int, default=0)
     reference.add_argument("--allow-batch-dependent", action="store_true")
-
-    qualitative = common("export-qualitative-top1")
-    qualitative.add_argument("--selection", required=True)
-    qualitative.add_argument("--search", action="store_true", help="Search the three labelled MSLS/SVOX/Tokyo night query sets and select examples automatically")
-    qualitative.add_argument("--output-dir", required=True)
-    qualitative.add_argument("--cache-dir", required=True)
-    qualitative.add_argument("--batch-size", type=int, default=32)
-    qualitative.add_argument("--workers", type=int, default=4)
-    qualitative.add_argument(
-        "--models", nargs="+",
-        default=["cdnd", "cosplace", "eigenplaces", "official_mixvpr512"],
-        choices=[
-            "baseline", "cdnd", "cosplace", "eigenplaces", "official_mixvpr512",
-            "nocplace", "anyloc_pca", "crica_pca", "salad", "boq_pca",
-        ],
-    )
     return parser
-
-
-def _dimensions(expressions: list[str]) -> dict[int, str]:
-    result = {}
-    for expression in expressions:
-        if "=" not in expression:
-            raise ValueError("CDND result must use DIM=SUMMARY_JSON")
-        dimension, path = expression.split("=", 1)
-        dimension = int(dimension)
-        if dimension in result:
-            raise ValueError(f"Duplicate descriptor dimension: {dimension}")
-        result[dimension] = path
-    return result
-
-
-def _keyed_paths(expressions: list[str], *, integer_keys: bool = False) -> dict:
-    result = {}
-    for expression in expressions:
-        if "=" not in expression:
-            raise ValueError(f"Result mapping must use KEY=JSON: {expression!r}")
-        raw_key, path = expression.split("=", 1)
-        key = int(raw_key) if integer_keys else raw_key
-        if key in result:
-            raise ValueError(f"Duplicate result key: {key}")
-        result[key] = path
-    return result
 
 
 def main(argv=None) -> None:
     args = _parser().parse_args(argv)
+    # With workers=0, small per-image transforms run in this process. Using
+    # every CPU core for each tiny tensor operation can severely slow them.
+    # Keep explicit user thread settings; otherwise use a modest default.
+    cpu_threads = int(os.environ.get("OMP_NUM_THREADS", os.environ.get("MKL_NUM_THREADS", "2")))
+    if cpu_threads < 1:
+        raise ValueError("OMP_NUM_THREADS/MKL_NUM_THREADS must be positive")
+    torch.set_num_threads(cpu_threads)
+    if args.command == "train-vpr":
+        print(f"CPU intra-op threads: {torch.get_num_threads()}", file=sys.stderr, flush=True)
     if args.command == "audit-robotcar-seasons":
         print(json.dumps(audit_robotcar_seasons(
             args.data_root, output=args.output or None,
             conditions=tuple(args.conditions), cameras=args.cameras, protocol=args.protocol,
         ), indent=2, sort_keys=True))
         return
-    if args.command == "audit-resources":
-        config = apply_overrides(load_config(args.config), args.set)
-        print(json.dumps(audit_resources(
-            config, output_path=args.output or None, scan_images=not args.skip_images,
+    if args.command == "prepare-gsv-metric":
+        from .gsv_metric import prepare_gsv_metric
+        print(json.dumps(prepare_gsv_metric(
+            args.data_root, args.output_dir, min_class_images=args.min_class_images,
         ), indent=2, sort_keys=True))
         return
-    if args.command == "prepare-data":
-        result = build_manifests(
-            args.data_root, args.output_dir,
-            decode_darkdriving=not args.skip_darkdriving_decode,
-            clip_checkpoint=args.clip_checkpoint,
-            robotcar_training_dir=args.robotcar_training_dir,
-        )
-        print(json.dumps(result, indent=2, sort_keys=True))
-        return
-    if args.command == "summarize-cdnd-seed0":
-        print(summarize_cdnd_seed0(
-            _dimensions(args.baseline), _dimensions(args.candidate), args.output
-        ))
-        return
-    if args.command == "summarize-cdnd-multiseed":
-        print(summarize_cdnd_multiseed(
-            _keyed_paths(args.baseline, integer_keys=True),
-            _keyed_paths(args.candidate, integer_keys=True),
-            _keyed_paths(args.ablation),
-            args.output,
-        ))
-        return
-    if args.command == "summarize-paired-vpr":
-        print(summarize_paired_vpr(
-            args.baseline,
-            args.candidate,
-            args.label,
-            args.output,
-        ))
-        return
-    if args.command == "plot-paper-efficiency":
-        print(plot_accuracy_efficiency(
-            args.student_summary,
-            args.reference_root,
-            args.resource_summary,
-            args.output,
-            args.compact_summary,
-        ))
-        return
     if args.command == "audit-reference-models":
-        print(json.dumps(
-            audit_reference_models(args.config, args.output), indent=2, sort_keys=True
-        ))
+        print(json.dumps(audit_reference_models(args.config, args.output), indent=2, sort_keys=True))
         return
     if args.command == "fetch-reference-model":
-        print(json.dumps(
-            fetch_reference_model(args.config, args.model), indent=2, sort_keys=True
-        ))
+        print(json.dumps(fetch_reference_model(args.config, args.model), indent=2, sort_keys=True))
         return
     if args.command == "audit-reference-coverage":
-        print(audit_reference_coverage(
-            args.registry,
-            args.reference_root,
-            args.resources,
-            args.output,
-        ))
-        return
-    if args.command == "train-boq-small":
-        print(train_boq_small(args.config, smoke_steps=args.smoke_steps))
-        return
-    if args.command == "fit-anyloc-small-vocabulary":
-        print(fit_anyloc_small_vocabulary(
-            args.registry, args.model, args.output,
-            samples=args.samples, patches_per_image=args.patches_per_image,
-            random_seed=args.seed, batch_size=args.batch_size, workers=args.workers,
-        ))
-        return
-    if args.command == "summarize-small-references":
-        print(summarize_small_references(
-            args.registry, args.reference_root, args.resources, args.output,
-            model_names=tuple(args.models),
-            paired_summary=args.paired_summary or None,
-        ))
+        print(audit_reference_coverage(args.registry, args.reference_root, args.resources, args.output))
         return
     if args.command == "validate-reference-resources":
-        if not validate_reference_resources(
-            args.registry, args.resources, tuple(args.models)
-        ):
+        if not validate_reference_resources(args.registry, args.resources, tuple(args.models)):
             raise SystemExit(1)
         print(args.resources)
         return
+
     config = apply_overrides(load_config(args.config), args.set)
     if args.command == "audit-data":
-        result = audit_data(config.data, decode=args.decode)
-        print(json.dumps(result, indent=2, sort_keys=True))
-    elif args.command == "train-generator":
-        print(train_generator(config, smoke_steps=args.smoke_steps or None))
-    elif args.command == "translate-train":
-        print(translate_training_set(config, args.checkpoint or None, limit=args.limit or None))
+        print(json.dumps(audit_data(config.data, decode=args.decode), indent=2, sort_keys=True))
+    elif args.command == "audit-resources":
+        print(json.dumps(audit_resources(
+            config, output_path=args.output or None, scan_images=not args.skip_images,
+        ), indent=2, sort_keys=True))
     elif args.command == "train-vpr":
         print(train_vpr(config, smoke_epochs=args.smoke_epochs or None))
-    elif args.command == "cache-vpr-teacher":
-        print(cache_relation_teacher(config))
     elif args.command == "export-vpr-inference":
-        print(export_vpr_inference_checkpoint(
-            config, args.training_checkpoint, args.output
-        ))
+        print(export_vpr_inference_checkpoint(config, args.training_checkpoint, args.output))
+    elif args.command == "export-vpr-initial":
+        print(export_vpr_initial_checkpoint(config, args.output))
     elif args.command == "evaluate-trained-suite":
         print(evaluate_trained_suite(config, args.checkpoint, tuple(args.datasets)))
     elif args.command == "benchmark":
         print(json.dumps(benchmark_model(
-            config, args.checkpoint or None,
-            warmup=args.warmup, iterations=args.iterations,
+            config, args.checkpoint or None, warmup=args.warmup, iterations=args.iterations,
         ), indent=2, sort_keys=True))
     elif args.command == "benchmark-reference-models":
         print(benchmark_reference_models(
             config, args.config, tuple(args.models), warmup=args.warmup,
             iterations=args.iterations, output=args.output,
-        ))
-    elif args.command == "fit-reference-pca":
-        print(fit_reference_pca(
-            config,
-            args.registry,
-            args.model,
-            args.output,
-            args.cache,
-            components=args.components,
-            samples=args.samples,
-            random_seed=args.seed,
-            batch_size=args.batch_size,
-            workers=args.workers,
         ))
     elif args.command == "evaluate-reference-suite":
         print(evaluate_reference_suite(
@@ -381,19 +184,6 @@ def main(argv=None) -> None:
             batch_size_override=args.batch_size or None,
             allow_batch_dependent=args.allow_batch_dependent,
         ))
-    elif args.command == "export-qualitative-top1":
-        if args.search:
-            from .qualitative.search import search_qualitative_top1
-            print(search_qualitative_top1(
-                config, args.selection, args.output_dir, args.cache_dir,
-                batch_size=args.batch_size, workers=args.workers,
-            ))
-        else:
-            print(export_qualitative_top1(
-                config, args.selection, args.output_dir, args.cache_dir,
-                batch_size=args.batch_size, workers=args.workers,
-                models=tuple(args.models),
-            ))
     else:
         raise AssertionError(args.command)
 

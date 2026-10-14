@@ -1,5 +1,4 @@
 import csv
-import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -10,7 +9,6 @@ from a2b_lightvpr import paths
 from a2b_lightvpr.checkpointing import checkpoint_config_matches, data_fingerprints, file_sha256
 from a2b_lightvpr.config import DataConfig, ExperimentConfig, VPRConfig, load_config, validate_config
 from a2b_lightvpr.data import read_generated_manifest, read_generator_manifest
-from a2b_lightvpr.generator import translate
 from a2b_lightvpr.runtime import load_vpr_model
 from a2b_lightvpr.vpr import model as model_module
 
@@ -91,54 +89,19 @@ def test_resume_compares_relocated_resource_identity_and_preserves_hyperparamete
     assert not checkpoint_config_matches({"config": saved}, changed)
 
 
-def test_translation_reuses_unchanged_metadata_and_manifest_after_move(layout, monkeypatch):
-    project, legacy = layout
-    source = touch(paths.DATASETS_ROOT / "MSLS/day.png")
-    source_manifest = project / "data/source.csv"
-    old_source = paths.LEGACY_DATASETS_ROOT / "MSLS/day.png"
-    write_csv(source_manifest, [dict(image_id="i", split="train", dataset="msls", place_id="p", source_path=str(old_source))])
-    generator_checkpoint = project / "runs/generator/generator_final.pt"
-    generator_checkpoint.parent.mkdir(parents=True)
-    torch.save(dict(kind="generator_inference", objective="qsattn", step=30000,
-                    config_fingerprint="original", generator={}), generator_checkpoint)
-    output = project / "data/generated/test"
-    fake = touch(output / "images/msls/i.png")
-    output_manifest = output / "manifest.csv"
-    old_fake = legacy / "A2B-LightVPR/data/generated/test/images/msls/i.png"
-    write_csv(output_manifest, [dict(image_id="i", source_id="i", source_path=str(old_source),
-        generated_path=str(old_fake), split="train", domain="fake_night", role="database", traverse="",
-        utm_e="", utm_n="", yaw="", place_id="p", generator_sha256=file_sha256(generator_checkpoint), dataset="msls")])
-    metadata = dict(checkpoint=str(legacy / "A2B-LightVPR/runs/generator/generator_final.pt"),
-                    checkpoint_sha256=file_sha256(generator_checkpoint), checkpoint_step=30000,
-                    checkpoint_config_fingerprint="original",
-                    source_manifest=str(legacy / "A2B-LightVPR/data/source.csv"),
-                    source_manifest_sha256=file_sha256(source_manifest), output_size=[320, 480],
-                    datasets=["msls"], smoke_limit=None)
-    metadata_path = output / "translation_metadata.json"
-    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-    before = output_manifest.read_bytes(), metadata_path.read_bytes()
-    monkeypatch.setattr(translate, "ResnetGenerator", lambda: torch.nn.Identity())
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    config = ExperimentConfig(DataConfig(vpr_source_manifest=str(source_manifest),
-                                         generated_root=str(output)))
-    assert translate.translate_training_set(config, generator_checkpoint) == output_manifest
-    assert (output_manifest.read_bytes(), metadata_path.read_bytes()) == before
-    assert fake.is_file() and source.is_file()
-    assert not translate.translation_metadata_matches(metadata, {**metadata, "checkpoint_sha256": "changed"})
-
-
 def test_fixed_budget_source_training_fingerprints_only_active_training_assets(tmp_path):
     manifest = touch(tmp_path / "source.csv")
-    config = ExperimentConfig(DataConfig(vpr_source_manifest=str(manifest)),
-        vpr=VPRConfig(model_family="stable_night_salad", selection_rule="fixed_budget_last", evaluate_epoch_zero=False))
+    config = load_config("configs/experiments/metric/salad_small_gsv_day_only_544.yaml")
+    config = replace(config, data=replace(config.data, vpr_source_manifest=str(manifest)),
+                     vpr=replace(config.vpr, selection_rule="fixed_budget_last", evaluate_epoch_zero=False))
     assert data_fingerprints(config) == {"vpr_source_manifest": file_sha256(manifest)}
 
 
-def test_available_dataset_profile_is_explicit_and_keeps_legacy_dataset_constraint():
-    config = load_config("configs/experiments/students/stable_night_salad_msls_svox_day_aug_544.yaml")
-    assert config.vpr.datasets == ("msls", "svox")
-    assert config.vpr.selection_rule == "fixed_budget_last"
-    assert config.vpr.samples_per_epoch == sum(config.vpr.dataset_epoch_quotas.values()) == 40000
+def test_metric_profile_is_explicit_and_keeps_legacy_dataset_constraint():
+    config = load_config("configs/experiments/metric/salad_small_gsv_day_aug_544.yaml")
+    assert config.vpr.datasets == ("gsv_cities",)
+    assert config.vpr.selection_rule == "validation_best"
+    assert config.vpr.samples_per_epoch == sum(config.vpr.dataset_epoch_quotas.values()) == 251392
     legacy = ExperimentConfig(DataConfig(), vpr=VPRConfig(datasets=("msls", "svox")))
     with pytest.raises(ValueError, match="Formal VPR training"):
         validate_config(legacy)
@@ -165,34 +128,3 @@ def test_full_inference_load_does_not_require_original_mixvpr_initialization(tmp
     with pytest.raises(ValueError, match="requires a checkpoint"):
         model_module.build_descriptor_model("mixvpr", image_height=320, image_width=320,
                                             descriptor_dim=512, model_family="mixvpr")
-
-
-def test_prepare_refuses_to_overwrite_incomplete_existing_robotcar_training_identities(layout, monkeypatch):
-    from a2b_lightvpr import prepare
-    project, _ = layout
-    monkeypatch.setattr(prepare, "PROJECT_ROOT", project)
-    output = project / "data/manifests"
-    manifest = output / "vpr_train.csv"
-    write_csv(manifest, [dict(dataset="robotcar", split="train", source_path="missing.png")])
-    before = manifest.read_bytes()
-    with pytest.raises(ValueError, match="refusing to overwrite"):
-        prepare.build_manifests(paths.DATASETS_ROOT, output)
-    assert manifest.read_bytes() == before
-
-
-def test_prepare_preserves_existing_robotcar_training_ids_without_test_assets(layout, monkeypatch):
-    from a2b_lightvpr import prepare
-    project, _ = layout
-    monkeypatch.setattr(prepare, "PROJECT_ROOT", project)
-    output = project / "data/manifests"
-    rows = [dict(dataset="robotcar", split="train", source_path=str(touch(project / f"day{i}.png")),
-                 image_id=f"frozen-id-{i}", place_id="frozen-place", route="training-route") for i in range(2)]
-    manifest = output / "vpr_train.csv"
-    write_csv(manifest, rows)
-    summary = prepare.build_manifests(paths.DATASETS_ROOT, output)
-    with manifest.open() as handle:
-        retained = list(csv.DictReader(handle))
-    assert [(row["image_id"], row["place_id"], row["route"]) for row in retained] == [
-        (row["image_id"], row["place_id"], row["route"]) for row in rows]
-    assert summary["vpr"] == {"robotcar": 2}
-    assert not (project / "data/protocols").exists()

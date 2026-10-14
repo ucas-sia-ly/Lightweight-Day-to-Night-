@@ -84,8 +84,11 @@ def test_writer_flushes_and_closes_on_exception(tmp_path, monkeypatch):
     assert [name for name, _ in called][-2:] == ["flush", "close"]
 
 
-def test_real_events_are_finite_detached_and_resume_hides_stale_future(tmp_path):
+def test_real_events_are_finite_detached_and_resume_hides_stale_future(tmp_path, monkeypatch):
     from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+    from tensorboard.summary.writer import event_file_writer
+    # Exercise the filename boundary that otherwise depends on preceding tests.
+    monkeypatch.setattr(event_file_writer, "_global_uid", event_file_writer.AtomicCounter(9))
     cfg = replace(config().vpr, tensorboard_log_dir=str(tmp_path / "custom"))
     value = torch.tensor(2., requires_grad=True)
     with create_summary_writer(cfg, tmp_path) as writer:

@@ -21,6 +21,7 @@ from .models import (
 from ..trained_suite import SUITE_PROTOCOLS, expand_suite_datasets
 from ..evaluation import resolve_database_domain
 from ..transforms import VPRTransform
+from ..runtime import vpr_device
 
 
 def evaluate_reference_suite(
@@ -70,7 +71,7 @@ def evaluate_reference_suite(
     summary_path = root / "summary.json"
     configured_batch_size = (
         int(spec.get("native_batch_size", 1))
-        if transform_name == "native" else max(1, config.vpr.batch_size * 2)
+        if transform_name == "native" else (config.evaluation.batch_size or max(1, config.vpr.batch_size * 2))
     )
     if spec.get("batch_dependent"):
         configured_batch_size = 1
@@ -80,6 +81,9 @@ def evaluate_reference_suite(
         if spec.get("batch_dependent") and batch_size_override > 1 and not allow_batch_dependent:
             raise ValueError("Batch-dependent reference evaluation requires --allow-batch-dependent")
         configured_batch_size = int(batch_size_override)
+    input_transform = "resize" if transform_name == "native" else config.vpr.input_transform
+    transform_kind = "direct-resize" if input_transform == "resize" else "fit-and-pad"
+    padding = "none" if input_transform == "resize" else "imagenet-mean-centered"
     identity = {
         "model": model_name,
         "database_encoder": database_encoder,
@@ -90,6 +94,7 @@ def evaluate_reference_suite(
         ),
         "evaluation_recalls": list(config.evaluation.recalls),
         "transform": transform_name,
+        "input_transform": input_transform,
         "query_checkpoint_sha256": file_sha256(query_checkpoint),
         "database_checkpoint_sha256": file_sha256(database_checkpoint),
         "input_size": (
@@ -128,10 +133,9 @@ def evaluate_reference_suite(
                     database, queries, radius, yaw
                 )
                 height, width = identity["input_size"]
-                padding = "none" if transform_name == "native" else "imagenet-mean-centered"
                 eval_fingerprint = evaluation_fingerprint(
                     query_fingerprint,
-                    transform="direct-resize" if transform_name == "native" else "fit-and-pad",
+                    transform=transform_kind,
                     height=height,
                     width=width,
                     padding=padding,
@@ -150,12 +154,12 @@ def evaluate_reference_suite(
                 return summary_path
             cached_payload = cached
 
+    device = vpr_device(config)
     query_model = build_reference_model(spec)
     database_model = (
         build_reference_model({**spec, "checkpoint": str(database_checkpoint)})
         if database_encoder == "original" else query_model
     )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     query_model.eval().to(device)
     database_model.eval().to(device)
     if transform_name == "native":
@@ -164,8 +168,8 @@ def evaluate_reference_suite(
         batch_size = int(spec.get("native_batch_size", 1))
     else:
         height, width = config.vpr.image_height, config.vpr.image_width
-        transform = VPRTransform(height, width)
-        batch_size = max(1, config.vpr.batch_size * 2)
+        transform = VPRTransform(height, width, resize_mode=input_transform)
+        batch_size = config.evaluation.batch_size or max(1, config.vpr.batch_size * 2)
     batch_size = configured_batch_size
 
     payload = cached_payload or {
@@ -176,6 +180,7 @@ def evaluate_reference_suite(
         "nightcities_available": False,
         "datasets": {},
     }
+    database_descriptor_cache = {}
     for name in selected:
         if name in payload["datasets"]:
             continue
@@ -183,8 +188,6 @@ def evaluate_reference_suite(
         database, queries = suite_rows(config, dataset, split)
         database, database_digest = resolve_database_domain(database, config.evaluation, split, queries)
         query_fingerprint = query_protocol_fingerprint(database, queries, radius, yaw)
-        transform_kind = "direct-resize" if transform_name == "native" else "fit-and-pad"
-        padding = "none" if transform_name == "native" else "imagenet-mean-centered"
         eval_fingerprint = evaluation_fingerprint(
             query_fingerprint,
             transform=transform_kind,
@@ -204,6 +207,7 @@ def evaluate_reference_suite(
             device,
             batch_size,
             config.vpr.workers,
+            database_descriptor_cache,
         )
         metrics.update({
             **suite_protocol_metadata(config, dataset),
@@ -219,6 +223,7 @@ def evaluate_reference_suite(
             "input_size": [height, width],
             "transform": transform_name,
             "transform_kind": transform_kind,
+            "input_transform": input_transform,
             "interpolation": "bicubic",
             "padding": padding,
             "normalization": "imagenet",

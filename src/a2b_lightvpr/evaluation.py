@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
@@ -88,7 +89,7 @@ def positive_indices(
     return positives
 
 
-def search_topk_descriptors(database_descriptors, query_descriptors, top_k: int):
+def search_topk_descriptors(database_descriptors, query_descriptors, top_k: int, *, database_groups=None):
     """Exact inner-product retrieval, also usable when Query ground truth is private."""
     database_descriptors = np.asarray(database_descriptors, dtype=np.float32)
     query_descriptors = np.asarray(query_descriptors, dtype=np.float32)
@@ -104,12 +105,26 @@ def search_topk_descriptors(database_descriptors, query_descriptors, top_k: int)
     if not np.isfinite(database_descriptors).all() or not np.isfinite(query_descriptors).all():
         raise ValueError("Retrieval descriptors must be finite")
     maximum = min(top_k, len(database_descriptors))
+    grouped_maximum = None
+    if database_groups is not None:
+        if len(database_groups) != len(database_descriptors):
+            raise ValueError("Retrieval groups must match the database rows")
+        if any(group is None or group == "" for group in database_groups):
+            raise ValueError("Retrieval group IDs cannot be empty")
+        try:
+            counts = Counter(database_groups)
+        except TypeError as error:
+            raise ValueError("Retrieval group IDs must be hashable") from error
+        grouped_maximum = min(top_k, len(counts))
+        # At most max_group_size candidates can belong to one panorama. This
+        # guarantees enough unique groups without a full-database rank matrix.
+        maximum = min(grouped_maximum * max(counts.values()), len(database_descriptors))
     try:
         import faiss
 
         index = faiss.IndexFlatIP(database_descriptors.shape[1])
         index.add(database_descriptors)
-        return index.search(query_descriptors, maximum)
+        scores, predictions = index.search(query_descriptors, maximum)
     except ImportError:
         # Bound memory instead of materializing the entire Query x Database matrix.
         scores = np.empty((len(query_descriptors), maximum), dtype=np.float32)
@@ -122,7 +137,26 @@ def search_topk_descriptors(database_descriptors, query_descriptors, top_k: int)
             end = start + len(similarities)
             predictions[start:end] = np.take_along_axis(candidates, order, axis=1)
             scores[start:end] = np.take_along_axis(candidate_scores, order, axis=1)
-        return scores, predictions
+    if grouped_maximum is not None:
+        grouped_scores = np.empty((len(query_descriptors), grouped_maximum), dtype=np.float32)
+        grouped_predictions = np.empty((len(query_descriptors), grouped_maximum), dtype=np.int64)
+        for query_index, (query_scores, query_predictions) in enumerate(zip(scores, predictions)):
+            seen = set()
+            rank = 0
+            for score, prediction in zip(query_scores, query_predictions):
+                group = database_groups[int(prediction)]
+                if group in seen:
+                    continue
+                seen.add(group)
+                grouped_scores[query_index, rank] = score
+                grouped_predictions[query_index, rank] = prediction
+                rank += 1
+                if rank == grouped_maximum:
+                    break
+            if rank != grouped_maximum:
+                raise RuntimeError("Retrieval candidate budget did not cover the requested unique groups")
+        return grouped_scores, grouped_predictions
+    return scores, predictions
 
 
 def retrieval_metrics(
@@ -130,8 +164,14 @@ def retrieval_metrics(
     query_descriptors: np.ndarray,
     positives: list[np.ndarray],
     recall_values: tuple[int, ...],
+    database_groups=None,
 ) -> dict:
-    _, predictions = search_topk_descriptors(database_descriptors, query_descriptors, max(recall_values))
+    if database_groups is None:
+        _, predictions = search_topk_descriptors(database_descriptors, query_descriptors, max(recall_values))
+    else:
+        _, predictions = search_topk_descriptors(
+            database_descriptors, query_descriptors, max(recall_values), database_groups=database_groups,
+        )
 
     valid = np.asarray([len(items) > 0 for items in positives], dtype=bool)
     success_by_k = {}

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -23,6 +24,22 @@ def create_summary_writer(cfg, output_dir: str | Path, purge_step: int | None = 
             "or run pip install tensorboard. Set tensorboard_enabled=false to disable logging."
         ) from error
     log_dir = Path(cfg.tensorboard_log_dir).expanduser() if cfg.tensorboard_log_dir else Path(output_dir) / "tensorboard"
+    if purge_step is not None:
+        # TensorBoard reads files lexicographically. Within one second its
+        # unpadded writer IDs can sort 10 before 9, applying the resume marker
+        # before the stale events it must purge. Give the new file a later
+        # timestamp using the public writer API, without rewriting old logs.
+        timestamps = []
+        for path in log_dir.glob("events.out.tfevents.*"):
+            fields = path.name.split(".")
+            if len(fields) > 3 and fields[3].isdigit():
+                timestamps.append(int(fields[3]))
+        if timestamps:
+            delay = max(timestamps) + 1 - time.time()
+            if delay > 1.1:
+                raise RuntimeError("TensorBoard event filenames are ahead of the current clock; correct the clock or choose a new log directory before resuming")
+            if delay > 0:
+                time.sleep(delay + 0.005)
     writer = SummaryWriter(
         log_dir=str(log_dir), purge_step=purge_step, flush_secs=cfg.tensorboard_flush_secs,
     )

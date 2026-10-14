@@ -85,11 +85,31 @@ def generator_inference_tensor(image: Image.Image, max_height: int, max_width: i
 class VPRTransform:
     height: int
     width: int
+    resize_mode: str = "fit_pad"
+
+    def __post_init__(self) -> None:
+        if self.resize_mode not in {"fit_pad", "resize"}:
+            raise ValueError("VPR resize_mode must be fit_pad or resize")
+
+    @property
+    def transform_kind(self) -> str:
+        return "direct-resize" if self.resize_mode == "resize" else "fit-and-pad"
+
+    @property
+    def padding(self) -> str:
+        return "none" if self.resize_mode == "resize" else "imagenet-mean-centered"
 
     def _fit_canvas(
         self, image: Image.Image, return_mask: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         image = image.convert("RGB")
+        if self.resize_mode == "resize":
+            tensor = TF.to_tensor(TF.resize(
+                image, [self.height, self.width],
+                interpolation=TF.InterpolationMode.BICUBIC, antialias=True,
+            ))
+            valid = torch.ones((self.height, self.width), dtype=torch.bool) if return_mask else None
+            return TF.normalize(tensor, IMAGENET_MEAN, IMAGENET_STD), valid
         source_width, source_height = image.size
         scale = min(self.width / source_width, self.height / source_height)
         resized_height, resized_width = _scaled_size(source_width, source_height, scale)
@@ -113,7 +133,7 @@ class VPRTransform:
         return TF.normalize(canvas, IMAGENET_MEAN, IMAGENET_STD), valid
 
     def __call__(self, image: Image.Image) -> torch.Tensor:
-        # Keep the existing tensor-only fit-and-pad interface for all baselines.
+        # The default preserves the existing tensor-only fit-and-pad behavior.
         return self._fit_canvas(image)[0]
 
     def transform_with_mask(

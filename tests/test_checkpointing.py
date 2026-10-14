@@ -62,3 +62,14 @@ def test_generator_fingerprint_requires_only_its_training_manifest(tmp_path):
     manifest.write_text("training source bytes")
     config = ExperimentConfig(DataConfig(generator_manifest=str(manifest), vpr_source_manifest="absent.csv"))
     assert data_fingerprints(config, purpose="generator") == {"generator_manifest": file_sha256(manifest)}
+
+
+def test_source_metric_checkpoint_does_not_depend_on_retired_generator_manifest():
+    from a2b_lightvpr.config import load_config
+    config = load_config('configs/experiments/metric/salad_small_gsv_day_only_544.yaml')
+    saved = config.as_dict()
+    saved['data']['generator_manifest'] = 'deleted/qsattn_training.csv'
+    state = {'config': saved, 'config_fingerprint': 'historical-config'}
+    assert checkpoint_config_matches(state, config, ('data', 'vpr', 'evaluation'))
+    saved['data']['vpr_source_manifest'] = 'different_source_labels.csv'
+    assert not checkpoint_config_matches(state, config, ('data', 'vpr', 'evaluation'))

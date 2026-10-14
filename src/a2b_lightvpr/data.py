@@ -14,7 +14,7 @@ from torch.utils.data import Dataset, Sampler
 
 from .config import DataConfig
 from .paths import resolve_manifest_image_path, resolve_resource_path
-from .transforms import GeneratorTrainTransform, PhotometricVPR, VPRTransform, patch_valid_mask
+from .transforms import PhotometricVPR, VPRTransform, patch_valid_mask
 
 FIXED_RANDOM_STATE = 0
 
@@ -45,7 +45,7 @@ def read_generator_manifest(path: str | Path, split: str = "train") -> list[dict
 
 def audit_data(config: DataConfig, *, decode: bool = False) -> dict:
     """Audit training manifests independently of retired custom test protocols."""
-    generator_rows = read_generator_manifest(config.generator_manifest)
+    generator_rows = read_generator_manifest(config.generator_manifest) if config.generator_manifest else []
     source_manifest = resolve_resource_path(config.vpr_source_manifest)
     source_rows = read_generated_manifest(source_manifest) if source_manifest.is_file() else []
     if any(row.get("split") != "train" for row in source_rows):
@@ -91,55 +91,6 @@ def audit_data(config: DataConfig, *, decode: bool = False) -> dict:
     if missing:
         raise FileNotFoundError(f"Missing {len(missing)} training images; first={missing[0]}")
     return result
-
-
-class BalancedGeneratorDataset(Dataset):
-    """Dataset-balanced, unpaired day/night sampling for formal QS-Attn training."""
-
-    def __init__(self, config: DataConfig, length: int):
-        rows = read_generator_manifest(config.generator_manifest)
-        grouped: dict[str, dict[str, list]] = {}
-        for row in rows:
-            pools = grouped.setdefault(row["dataset"], {"day": [], "night": []})
-            if row.get("source_path"):
-                pools["day"].append(row["source_path"])
-            if row.get("target_path"):
-                pools["night"].append(row["target_path"])
-        self.grouped = {
-            name: pools for name, pools in grouped.items() if pools["day"] and pools["night"]
-        }
-        if not self.grouped:
-            raise ValueError("Generator manifest has no dataset with both day and night images")
-        configured = config.dataset_weights or {name: 1.0 for name in self.grouped}
-        self.datasets = [name for name in sorted(self.grouped) if name in configured]
-        self.weights = [float(configured[name]) for name in self.datasets]
-        if not self.datasets:
-            raise ValueError("No configured dataset weights match the generator manifest")
-        self.length = int(length)
-        self.transform = GeneratorTrainTransform(config.load_short_side, config.crop_size)
-
-    def __len__(self) -> int:
-        return self.length
-
-    @staticmethod
-    def _open(path: str) -> Image.Image:
-        with Image.open(path) as image:
-            return image.convert("RGB")
-
-    def __getitem__(self, index: int) -> dict:
-        rng = random.Random(FIXED_RANDOM_STATE + int(index) * 1_000_003)
-        dataset = rng.choices(self.datasets, weights=self.weights, k=1)[0]
-        pools = self.grouped[dataset]
-        day_path, night_path = rng.choice(pools["day"]), rng.choice(pools["night"])
-        source = self.transform(self._open(day_path), rng=rng)
-        target = self.transform(self._open(night_path), rng=rng)
-        return {
-            "source": source,
-            "target": target,
-            "source_path": day_path,
-            "target_path": night_path,
-            "dataset": dataset,
-        }
 
 
 def read_generated_manifest(path: str | Path) -> list[dict[str, str]]:

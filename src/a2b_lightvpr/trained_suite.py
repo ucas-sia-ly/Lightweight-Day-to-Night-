@@ -15,7 +15,7 @@ from .references.models import (
     suite_rows,
     suite_protocol_metadata,
 )
-from .runtime import benchmark_model, load_vpr_model
+from .runtime import benchmark_model, load_vpr_model, vpr_device
 from .transforms import VPRTransform
 from .vpr.model import resolve_initial_checkpoint
 
@@ -24,22 +24,23 @@ SUITE_PROTOCOLS = {
     "robotcar_seasons_night": ("robotcar_seasons_night", "test", None, None, "test"),
     "svox_night": ("svox_night", "test", 25.0, None, "test"),
     "msls_night": ("msls_night", "val", 25.0, None, "validation"),
-    "tokyo_night": ("tokyo_night", "test", 25.0, None, "test"),
-    "tokyo_sunset": ("tokyo_sunset", "test", 25.0, None, "test"),
     "msls_day_val": ("msls_day_val", "val", 25.0, None, "validation"),
     "svox_day_val": ("svox_day_val", "val", 25.0, None, "validation"),
     "robotcar_seasons_day": ("robotcar_seasons_day", "test", None, None, "test"),
     "svox_day": ("svox_day", "test", 25.0, None, "test"),
     "svox_sun": ("svox_sun", "test", 25.0, None, "test"),
-    "tokyo_day": ("tokyo_day", "test", 25.0, None, "test"),
+    "tokyo247": ("tokyo247", "test", 25.0, None, "test"),
+    "tokyo247_night": ("tokyo247_night", "test", 25.0, None, "test"),
+    "tokyo247_day": ("tokyo247_day", "test", 25.0, None, "test"),
+    "tokyo247_sunset": ("tokyo247_sunset", "test", 25.0, None, "test"),
 }
 NIGHT_PROTOCOLS = (
-    "robotcar_seasons_night", "svox_night", "msls_night", "tokyo_night",
-    "tokyo_sunset",
+    "robotcar_seasons_night", "svox_night", "msls_night", "tokyo247_night",
+    "tokyo247_sunset",
 )
 DAY_PROTOCOLS = (
     "msls_day_val", "svox_day_val", "robotcar_seasons_day", "svox_day", "svox_sun",
-    "tokyo_day",
+    "tokyo247_day",
 )
 def expand_suite_datasets(datasets: tuple[str, ...]):
     aliases = set(datasets)
@@ -84,6 +85,7 @@ def _suite_summary_values(payload: dict, selected: tuple[str, ...]) -> dict:
         "suite/initialization": payload["initialization"],
         "suite/encoder": payload["encoder"],
         "suite/input_size": payload["input_size"],
+        "suite/input_transform": payload.get("input_transform", "fit_pad"),
         "suite/database_domain": payload.get("database_domain", "day"),
         "suite/parameters": benchmark["parameters"],
         "suite/latency_p50_ms": benchmark["latency_ms"]["p50"],
@@ -108,7 +110,10 @@ def evaluate_trained_suite(
         output_dir = output_dir / "fake_night"
     summary_path = output_dir / "summary.json"
     checkpoint_sha256 = file_sha256(checkpoint_path)
-    source_only = config.vpr.model_family == "stable_night_salad" and config.vpr.train_domains in {"day_only", "day_aug"}
+    source_only = (
+        config.vpr.model_family == "stable_night_salad"
+        or config.vpr.training_objective == "multi_similarity"
+    ) and config.vpr.train_domains in {"day_only", "day_aug"}
     training_manifest = Path(config.data.vpr_source_manifest) if source_only else Path(config.data.generated_root) / "manifest.csv"
     manifest_sha256 = file_sha256(training_manifest)
     database_manifest_sha256 = (
@@ -122,9 +127,13 @@ def evaluate_trained_suite(
         "gamma_max": config.vpr.stable_dustbin_gamma_max,
         "sinkhorn_iterations": config.vpr.stable_sinkhorn_iterations,
     } if stable_night else {}
-    if stable_night:
+    transform = VPRTransform(
+        config.vpr.image_height, config.vpr.image_width,
+        resize_mode=config.vpr.input_transform,
+    )
+    if config.vpr.model_family in {"salad", "stable_night_salad"}:
         initialization_checkpoint = config.vpr.init_checkpoint or config.vpr.backbone_checkpoint
-    elif config.vpr.model_family in {"salad", "dino_mix"}:
+    elif config.vpr.model_family == "dino_mix":
         initialization_checkpoint = config.vpr.backbone_checkpoint
     else:
         initialization_checkpoint = config.vpr.init_checkpoint
@@ -143,11 +152,14 @@ def evaluate_trained_suite(
             and cached.get("input_size") == [
                 config.vpr.image_height, config.vpr.image_width
             ]
+            and cached.get("input_transform", "fit_pad") == config.vpr.input_transform
             and cached.get("random_seed", 0) == config.vpr.random_seed
             and cached.get("evaluation_recalls") == list(config.evaluation.recalls)
             and (not stable_night or (
                 cached.get("stable_head_options") == stable_head_options
             ))
+            and (config.vpr.model_family not in {"salad", "stable_night_salad"}
+                 or cached.get("initialization") == (initialization_checkpoint or "torchvision_imagenet"))
         )
         if cache_matches:
             changed = False
@@ -155,7 +167,11 @@ def evaluate_trained_suite(
                 del cached["datasets"][name]
                 changed = True
             training_identity = {
+                "training_objective": config.vpr.training_objective,
                 "train_domains": config.vpr.train_domains,
+                "salad_dropout": config.vpr.salad_dropout,
+                "metric_augmentation_probability": config.vpr.metric_augmentation_probability,
+                "metric_within_city": config.vpr.metric_within_city,
                 "cross_domain_aux": config.vpr.cross_domain_aux,
                 "relation_weight": config.vpr.relation_weight,
                 "relation_day_weight": config.vpr.relation_day_weight,
@@ -178,10 +194,10 @@ def evaluate_trained_suite(
                 )
                 eval_fingerprint = evaluation_fingerprint(
                     query_fingerprint,
-                    transform="fit-and-pad",
+                    transform=transform.transform_kind,
                     height=config.vpr.image_height,
                     width=config.vpr.image_width,
-                    padding="imagenet-mean-centered",
+                    padding=transform.padding,
                 )
                 if (
                     metrics.get("query_protocol_fingerprint") != query_fingerprint
@@ -197,10 +213,9 @@ def evaluate_trained_suite(
                 return summary_path
             cached_payload = cached
 
+    device = vpr_device(config)
     model, state, checkpoint_path = load_vpr_model(config, checkpoint_path)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval().to(device)
-    transform = VPRTransform(config.vpr.image_height, config.vpr.image_width)
     payload = cached_payload or {
         "checkpoint": str(checkpoint_path.resolve()),
         "checkpoint_sha256": checkpoint_sha256,
@@ -215,7 +230,11 @@ def evaluate_trained_suite(
         "descriptor_dim": config.vpr.descriptor_dim,
         "random_seed": config.vpr.random_seed,
         "training": {
+            "training_objective": config.vpr.training_objective,
             "train_domains": config.vpr.train_domains,
+            "salad_dropout": config.vpr.salad_dropout,
+            "metric_augmentation_probability": config.vpr.metric_augmentation_probability,
+            "metric_within_city": config.vpr.metric_within_city,
             "cross_domain_aux": config.vpr.cross_domain_aux,
             "relation_weight": config.vpr.relation_weight,
             "relation_day_weight": config.vpr.relation_day_weight,
@@ -224,6 +243,7 @@ def evaluate_trained_suite(
             "relation_queue_scope": config.vpr.relation_queue_scope,
         },
         "input_size": [config.vpr.image_height, config.vpr.image_width],
+        "input_transform": config.vpr.input_transform,
         "stable_head_options": stable_head_options,
         "evaluation_recalls": list(config.evaluation.recalls),
         "datasets": {},
@@ -241,6 +261,7 @@ def evaluate_trained_suite(
         payload["benchmark"] = benchmark_model(
             config, checkpoint_path, warmup=10, iterations=100
         )
+    database_descriptor_cache = {}
     for name in selected:
         if name in payload["datasets"]:
             continue
@@ -249,15 +270,16 @@ def evaluate_trained_suite(
         query_fingerprint = query_protocol_fingerprint(database, queries, radius, yaw)
         eval_fingerprint = evaluation_fingerprint(
             query_fingerprint,
-            transform="fit-and-pad",
+            transform=transform.transform_kind,
             height=config.vpr.image_height,
             width=config.vpr.image_width,
-            padding="imagenet-mean-centered",
+            padding=transform.padding,
         )
         metrics = evaluate_dual_encoder(
             model, model, database, queries, transform, radius, yaw,
             config.evaluation.recalls, device,
-            max(1, config.vpr.batch_size * 2), config.vpr.workers,
+            config.evaluation.batch_size or max(1, config.vpr.batch_size * 2), config.vpr.workers,
+            database_descriptor_cache,
         )
         metrics.update({
             **suite_protocol_metadata(config, dataset),
@@ -270,9 +292,10 @@ def evaluate_trained_suite(
             "query_protocol_fingerprint": query_fingerprint,
             "evaluation_fingerprint": eval_fingerprint,
             "protocol_fingerprint": query_fingerprint,
-            "transform": "fit-and-pad",
+            "transform": transform.transform_kind,
+            "input_transform": config.vpr.input_transform,
             "interpolation": "bicubic",
-            "padding": "imagenet-mean-centered",
+            "padding": transform.padding,
             "normalization": "imagenet",
             "database_descriptor_mib_fp32": (
                 len(database) * config.vpr.descriptor_dim * 4 / 1024**2

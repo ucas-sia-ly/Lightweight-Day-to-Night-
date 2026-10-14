@@ -33,6 +33,18 @@ def checkpoint_config_matches(state: dict, config, sections: tuple[str, ...] | N
         return True
     if not saved:
         return False
+    if sections is None or "generator" not in sections:
+        # The GSV metric route reads only source images. A retired generator
+        # manifest is metadata, so deleting its unused path must not prevent
+        # exporting or resuming otherwise identical metric checkpoints.
+        source_metric = all(
+            values.get("vpr", {}).get("training_objective") == "multi_similarity"
+            and values.get("vpr", {}).get("train_domains") in {"day_only", "day_aug"}
+            for values in (saved, current)
+        )
+        if source_metric:
+            for values in (saved, current):
+                values.get("data", {}).pop("generator_manifest", None)
     if sections is not None and "generator" in sections and "vpr" not in sections:
         # Only these data controls affect unpaired generator training. Public
         # evaluation roots, VPR labels and inference sizes do not change it.
@@ -60,9 +72,14 @@ def checkpoint_config_matches(state: dict, config, sections: tuple[str, ...] | N
     from .config import VPRConfig
     prototype_defaults = VPRConfig()
     for name, value in vars(prototype_defaults).items():
-        if name.startswith("stable_"):
+        if name.startswith("stable_") or name in {
+            "training_objective", "input_transform", "salad_dropout",
+            "metric_augmentation_probability", "metric_within_city",
+            "require_cuda",
+        }:
             saved_vpr.setdefault(name, value)
     saved.setdefault("evaluation", {}).setdefault("fake_database_manifest", "")
+    saved["evaluation"].setdefault("batch_size", 0)
     def active_fields(candidate, reference):
         if isinstance(reference, dict):
             return {

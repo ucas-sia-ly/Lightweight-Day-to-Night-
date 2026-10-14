@@ -4,6 +4,9 @@ import math
 import json
 import random
 import resource
+import os
+import shutil
+import tempfile
 import time
 from contextlib import ExitStack
 from pathlib import Path
@@ -25,6 +28,7 @@ from ..checkpointing import (
     write_json,
 )
 from ..config import ExperimentConfig
+from ..runtime import vpr_device
 from ..data import (
     CoverageBalancedSampler,
     PKBalancedBatchSampler,
@@ -33,6 +37,7 @@ from ..data import (
     StableNightVPRDataset,
 )
 from ..transforms import VPRTransform
+from ..gsv_metric import MetricCityBatchSampler, MetricVPRDataset
 from ..training_logging import create_summary_writer, log_patch_diagnostics, log_scalars
 from .losses import (
     MarginCosineClassifier,
@@ -45,6 +50,7 @@ from .neighborhood import DatasetNeighborhoodQueue
 from .teacher_cache import TeacherDescriptorCache
 from .salad import DINOv2SALADBackbone
 from .stable_night import stable_night_batch_loss
+from .metric import metric_place_loss
 
 
 def _set_random_state(seed: int) -> None:
@@ -145,6 +151,7 @@ def _inference_checkpoint(
     epoch_zero_score,
     model,
     generated_manifest,
+    optimizer_step=0,
 ):
     return {
         "schema_version": SCHEMA_VERSION,
@@ -156,6 +163,11 @@ def _inference_checkpoint(
         "config_fingerprint": config.fingerprint(),
         "descriptor_dim": int(config.vpr.descriptor_dim),
         "random_seed": int(config.vpr.random_seed),
+        "training_steps": int(optimizer_step),
+        "model_family": config.vpr.model_family,
+        "backbone_name": config.vpr.backbone_name,
+        "image_size": [config.vpr.image_height, config.vpr.image_width],
+        "input_transform": config.vpr.input_transform,
         "data_fingerprints": data_fingerprints(config, generated=generated_manifest),
         "model": model.state_dict(),
     }
@@ -220,7 +232,7 @@ def _evaluate_validation(model, config, transform, device, output_path):
         metrics = evaluate_dual_encoder(
             model, model, database, queries, transform, 25.0, None,
             config.evaluation.recalls, device,
-            batch_size=max(1, config.vpr.batch_size * 2), workers=config.vpr.workers,
+            batch_size=config.evaluation.batch_size or max(1, config.vpr.batch_size * 2), workers=config.vpr.workers,
         )
         if metrics["valid_queries"] == 0:
             raise ValueError(f"No ground-truth positives in public validation split: {dataset}")
@@ -269,10 +281,81 @@ def export_vpr_inference_checkpoint(
         "descriptor_dim": int(config.vpr.descriptor_dim),
         "random_seed": int(config.vpr.random_seed),
         "data_fingerprints": state.get("data_fingerprints", {}),
+        "training_steps": state.get("optimizer_step"),
+        "model_family": config.vpr.model_family,
+        "backbone_name": config.vpr.backbone_name,
+        "image_size": [config.vpr.image_height, config.vpr.image_width],
+        "input_transform": config.vpr.input_transform,
         "model": state["model"],
     }
     atomic_torch_save(payload, output)
     return output
+
+
+def export_vpr_initial_checkpoint(config: ExperimentConfig, output: str | Path) -> Path:
+    """Export a fully initialized SALAD baseline without taking training steps."""
+    cfg = config.vpr
+    if cfg.model_family != "salad" or not cfg.init_checkpoint:
+        raise ValueError("Initial baseline export requires SALAD and a complete init_checkpoint")
+    output = Path(output).expanduser().resolve()
+    if output.exists():
+        raise FileExistsError(f"Refusing to overwrite inference checkpoint: {output}")
+    model = build_descriptor_model(
+        cfg.aggregator, image_height=cfg.image_height, image_width=cfg.image_width,
+        descriptor_dim=cfg.descriptor_dim, pretrained=False,
+        init_checkpoint=cfg.init_checkpoint, model_family=cfg.model_family,
+        backbone_name=cfg.backbone_name, backbone_repo=cfg.backbone_repo,
+        backbone_checkpoint=cfg.backbone_checkpoint,
+        backbone_trainable_blocks=cfg.backbone_trainable_blocks,
+        salad_dropout=cfg.salad_dropout,
+    ).eval()
+    payload = _inference_checkpoint(config, 0, -1.0, -1.0, model, None)
+    payload.update(
+        selection_rule="pretrained_baseline", training_steps=0,
+        initialization_checkpoint=str(Path(cfg.init_checkpoint).expanduser().resolve()),
+        initialization_sha256=file_sha256(cfg.init_checkpoint),
+        input_transform=cfg.input_transform,
+        image_size=[cfg.image_height, cfg.image_width],
+    )
+    atomic_torch_save(payload, output)
+    return output
+
+
+def _restore_resume_best(config, state, destination: Path) -> None:
+    """Carry the measured best model across output directories, byte exactly."""
+    resume = Path(config.vpr.resume).expanduser().resolve()
+    source_dir = resume.parent.parent if resume.parent.name == "checkpoints" else resume.parent
+    candidates = [destination, source_dir / "model_best.pt"]
+    saved_output = state.get("config", {}).get("vpr", {}).get("output_dir")
+    if saved_output:
+        candidates.append(Path(saved_output).expanduser() / "model_best.pt")
+    expected_hash = state.get("best_checkpoint_sha256", "")
+    for candidate in dict.fromkeys(candidates):
+        if not candidate.is_file():
+            continue
+        payload = torch.load(candidate, map_location="cpu", weights_only=True)
+        matches = (
+            payload.get("kind") == "vpr_inference"
+            and payload.get("descriptor_dim") == config.vpr.descriptor_dim
+            and int(payload.get("random_seed", 0)) == config.vpr.random_seed
+            and math.isclose(float(payload.get("val_recall1", -1)), float(state["best_val_recall1"]), abs_tol=1e-12)
+        )
+        if expected_hash:
+            matches = matches and file_sha256(candidate) == expected_hash
+        else:
+            matches = matches and payload.get("config_fingerprint") == state.get("config_fingerprint")
+        if not matches:
+            raise ValueError(f"Resume best checkpoint does not match the saved best model: {candidate}")
+        if candidate.resolve() != destination.resolve():
+            with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".resume-best.", delete=False) as handle:
+                temporary = Path(handle.name)
+            try:
+                shutil.copyfile(candidate, temporary)
+                os.replace(temporary, destination)
+            finally:
+                temporary.unlink(missing_ok=True)
+        return
+    raise FileNotFoundError("Validation-best resume requires the original model_best.pt beside the training checkpoint or in its saved output directory")
 
 
 def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> Path:
@@ -282,16 +365,27 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
 
 def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_stack: ExitStack) -> Path:
     cfg = config.vpr
-    stable_night = cfg.model_family == "stable_night_salad"
-    _set_random_state(cfg.random_seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     output_dir = Path(cfg.output_dir)
+    if not cfg.resume:
+        existing = [path for path in (
+            output_dir / "model_best.pt", output_dir / "checkpoints" / "latest.pt",
+            output_dir / "training_metrics.jsonl", output_dir / "validation" / "latest.json",
+        ) if path.exists()]
+        if existing:
+            raise FileExistsError(
+                f"Training output already contains experiment artifacts: {output_dir}. "
+                "Use vpr.resume to continue this run or select a new vpr.output_dir."
+            )
+    stable_night = cfg.model_family == "stable_night_salad"
+    metric_training = cfg.training_objective == "multi_similarity"
+    _set_random_state(cfg.random_seed)
+    device = vpr_device(config)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(config.as_dict(), output_dir / "resolved_config.json")
-    transform = VPRTransform(cfg.image_height, cfg.image_width)
+    transform = VPRTransform(cfg.image_height, cfg.image_width, resize_mode=cfg.input_transform)
     generated_manifest = Path(config.data.generated_root) / "manifest.csv"
     training_manifest = generated_manifest
-    if stable_night and cfg.train_domains in {"day_only", "day_aug"}:
+    if (stable_night or metric_training) and cfg.train_domains in {"day_only", "day_aug"}:
         training_manifest = Path(config.data.vpr_source_manifest)
         generated_manifest = None
     teacher_cache = (
@@ -306,7 +400,14 @@ def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_st
         dataset_sampling_weights=cfg.dataset_sampling_weights,
         datasets=cfg.datasets,
     )
-    if stable_night:
+    if metric_training:
+        dataset = MetricVPRDataset(
+            training_manifest, transform, train_domains=cfg.train_domains,
+            random_seed=cfg.random_seed,
+            augmentation_probability=cfg.metric_augmentation_probability,
+            **dataset_kwargs,
+        )
+    elif stable_night:
         dataset = StableNightVPRDataset(
             training_manifest, transform, train_domains=cfg.train_domains,
             random_seed=cfg.random_seed, **dataset_kwargs
@@ -317,7 +418,8 @@ def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_st
             include_fake=cfg.train_domains == "day_fake", **dataset_kwargs
         )
     if cfg.sampler == "pk_balanced":
-        sampler = PKBalancedBatchSampler(
+        sampler_class = MetricCityBatchSampler if metric_training and cfg.metric_within_city else PKBalancedBatchSampler
+        sampler = sampler_class(
             dataset.rows,
             cfg.dataset_epoch_quotas,
             cfg.pk_places_per_batch,
@@ -359,11 +461,12 @@ def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_st
         backbone_checkpoint=cfg.backbone_checkpoint,
         backbone_trainable_blocks=cfg.backbone_trainable_blocks,
         aggregator_repo=cfg.aggregator_repo,
+        salad_dropout=cfg.salad_dropout,
         **stable_model_kwargs,
     ).to(device)
     classifier_device = torch.device("cpu") if cfg.classifier_cpu_offload else device
     classifier = (
-        nn.Identity() if stable_night else MarginCosineClassifier(
+        nn.Identity() if stable_night or metric_training else MarginCosineClassifier(
             cfg.descriptor_dim, len(dataset.place_to_label)
         )
     ).to(classifier_device)
@@ -381,7 +484,7 @@ def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_st
     if reference_backbone is not None:
         training_reference_fingerprint = "stable_reference:" + file_sha256(cfg.backbone_checkpoint)
     metrics_path = output_dir / "training_metrics.jsonl"
-    if stable_night and not cfg.resume:
+    if (stable_night or metric_training) and not cfg.resume:
         metrics_path.write_text("", encoding="utf-8")
 
     loader_kwargs = {
@@ -396,10 +499,10 @@ def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_st
     if cfg.workers > 0:
         loader_kwargs.update(
             multiprocessing_context="spawn",
-            persistent_workers=True,
+            persistent_workers=not (stable_night or metric_training),
         )
     loader = DataLoader(dataset, **loader_kwargs)
-    steps_per_epoch = max(1, len(loader) // cfg.gradient_accumulation_steps)
+    steps_per_epoch = max(1, math.ceil(len(loader) / cfg.gradient_accumulation_steps))
     scheduler = build_vpr_scheduler(optimizer, cfg, steps_per_epoch)
     use_amp = bool(cfg.amp and device.type == "cuda")
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
@@ -447,6 +550,8 @@ def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_st
 
     epochs = int(smoke_epochs or cfg.epochs)
     best_path = output_dir / "model_best.pt"
+    if cfg.resume and cfg.selection_rule == "validation_best":
+        _restore_resume_best(config, state, best_path)
     global_step = saved_optimizer_step
     writer = logging_stack.enter_context(create_summary_writer(
         cfg, output_dir, purge_step=saved_optimizer_step + 1 if cfg.resume else None,
@@ -458,6 +563,10 @@ def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_st
         f"epochs={epochs}, total_samples={cfg.samples_per_epoch * epochs:,}, "
         f"effective_batch={cfg.batch_size * cfg.gradient_accumulation_steps}"
     )
+    if metric_training:
+        print(f"MultiSimilarity mining uses the physical batch: P={cfg.pk_places_per_batch}, "
+              f"K={cfg.pk_images_per_place}, sources={cfg.batch_size}; "
+              "gradient accumulation does not increase the mining pool.")
 
     if cfg.evaluate_epoch_zero and not cfg.resume:
         model.eval()
@@ -477,7 +586,7 @@ def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_st
 
     completed_epochs = start_epoch
     for epoch in range(start_epoch, epochs):
-        if stable_night and hasattr(dataset, "set_epoch"):
+        if (stable_night or metric_training) and hasattr(dataset, "set_epoch"):
             dataset.set_epoch(epoch)
         if isinstance(sampler, (CoverageBalancedSampler, RollingBalancedSampler, PKBalancedBatchSampler)):
             sampler.set_epoch(epoch)
@@ -513,7 +622,7 @@ def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_st
                      or batch_index + 1 == len(loader))
             )
             diagnostics = {} if capture_patches else None
-            day = batch["day"].to(device, non_blocking=True)
+            day = batch["image" if metric_training else "day"].to(device, non_blocking=True)
             fake = (
                 batch["fake"].to(device, non_blocking=True)
                 if cfg.train_domains in {"day_fake", "day_aug_fake"}
@@ -526,7 +635,12 @@ def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_st
             if cfg.cross_domain_aux == "cross_domain_relation" and len(batch_datasets) != 1:
                 raise RuntimeError("CDND requires every mini-batch to contain one dataset")
             with torch.autocast(device.type, enabled=use_amp):
-                if stable_night:
+                if metric_training:
+                    if image_keys.unique().numel() != image_keys.numel():
+                        raise ValueError("Metric positives require different canonical source images")
+                    loss, components = metric_place_loss(model.encode(day), labels)
+                    components["augmentation_fraction"] = batch["is_augmented"].float().mean().to(device)
+                elif stable_night:
                     view_images = {"day": day}
                     view_masks = {"day": batch["day_valid_mask"].to(device, non_blocking=True)}
                     if "aug" in batch:
@@ -626,7 +740,7 @@ def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_st
                 len(view_images) if stable_night else (2 if fake is not None else 1)
             )
             loss_value = float(loss.item())
-            if stable_night or writer is not None:
+            if stable_night or metric_training or writer is not None:
                 component_values = {name: float(value.detach().item()) for name, value in components.items()}
                 for name, value in component_values.items():
                     component_totals[name] = component_totals.get(name, 0.0) + value
@@ -702,14 +816,16 @@ def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_st
             sampler.state_dict() if hasattr(sampler, "state_dict") else None,
             relation_queue.state_dict() if relation_queue is not None else None,
         )
-        atomic_torch_save(state, output_dir / "checkpoints" / "latest.pt")
         if improved:
             atomic_torch_save(
                 _inference_checkpoint(
                     config, epoch + 1, score, epoch_zero_score, model, generated_manifest,
+                    optimizer_step=global_step,
                 ),
                 best_path,
             )
+        state["best_checkpoint_sha256"] = file_sha256(best_path)
+        atomic_torch_save(state, output_dir / "checkpoints" / "latest.pt")
 
         completed_epochs = epoch + 1
         if writer is not None:
@@ -727,10 +843,11 @@ def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_st
             log_scalars(writer, _optimizer_lrs(optimizer), global_step, "lr")
             log_scalars(writer, {"scale": scaler.get_scale()}, global_step, "amp")
             writer.flush()
-        if stable_night:
+        if stable_night or metric_training:
             epoch_metrics = {
                 "epoch": completed_epochs,
                 "train_domains": cfg.train_domains,
+                "training_objective": cfg.training_objective,
                 "components_mean": {
                     name: total / max(1, len(loader)) for name, total in component_totals.items()
                 },

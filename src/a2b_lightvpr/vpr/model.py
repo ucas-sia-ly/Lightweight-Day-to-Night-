@@ -180,6 +180,7 @@ def build_descriptor_model(
     stable_dustbin_gamma_init: float = 1.0,
     stable_dustbin_gamma_max: float = 4.0,
     stable_sinkhorn_iterations: int = 20,
+    salad_dropout: float = 0.0,
     load_initial_checkpoint: bool = True,
 ) -> nn.Module:
     if model_family == "stable_night_salad":
@@ -212,16 +213,24 @@ def build_descriptor_model(
             _strict_load_state(model, init_checkpoint)
         return model
     if model_family == "salad":
-        if (image_height, image_width) != (322, 322):
-            raise ValueError("Compact SALAD requires 322x322 input")
+        if (any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 or value % 14
+                for value in (image_height, image_width))
+                or (image_height // 14) * (image_width // 14) <= 16):
+            raise ValueError("Compact SALAD requires positive multiples of 14 and more than 16 patches")
         if aggregator_name != "salad" or descriptor_dim != 544:
             raise ValueError("Compact SALAD requires salad aggregation and 544 dimensions")
-        return SALADStudentModel(
+        if backbone_name not in {"dinov2_vits14", "dinov2_vits14_reg"}:
+            raise ValueError("Compact SALAD requires a DINOv2-S/14 backbone")
+        model = SALADStudentModel(
             backbone_repo,
             backbone_name,
             backbone_checkpoint,
             backbone_trainable_blocks,
+            dropout=salad_dropout,
         )
+        if init_checkpoint and load_initial_checkpoint:
+            _strict_load_state(model, init_checkpoint)
+        return model
     if model_family == "boq":
         if (image_height, image_width) != (322, 322):
             raise ValueError("BoQ CDND requires 322x322 input")

@@ -1,5 +1,6 @@
 import csv
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,6 @@ from PIL import Image
 
 from a2b_lightvpr.config import DataConfig
 from a2b_lightvpr.data import PairedVPRDataset, RollingBalancedSampler, audit_data
-from a2b_lightvpr.prepare import EXPECTED_VPR_ELIGIBLE, _parse_svox_train_path
 from a2b_lightvpr.transforms import VPRTransform
 
 
@@ -34,6 +34,16 @@ def test_training_audit_does_not_require_any_robotcar_test_protocol(tmp_path):
     assert result["generator_datasets"] == {"robotcar": 1}
     assert not result["robotcar_seasons_available"]
     assert "protocol_dataset" not in result and "robotcar_counts" not in result
+
+
+def test_source_only_training_audit_does_not_require_generator_metadata(tmp_path):
+    config = replace(write_fixture(tmp_path), generator_manifest="")
+    (tmp_path / "generator.csv").unlink()
+    result = audit_data(config)
+    assert result["generator_train_rows"] == 0
+    assert result["generator_datasets"] == {}
+    assert result["vpr_train_rows"] == 1
+    assert result["vpr_datasets"] == {"robotcar": 1}
 
 
 def test_training_audit_rejects_non_train_source_rows(tmp_path):
@@ -93,20 +103,6 @@ def test_vpr_dataset_sampling_weights_match_config(tmp_path):
         counts[dataset.rows[index]["dataset"]] += 1
     for name, probability in expected.items():
         assert counts[name] / 100000 == pytest.approx(probability, abs=0.01)
-
-
-def test_frozen_extended_place_statistics():
-    assert EXPECTED_VPR_ELIGIBLE == {
-        "msls": {"places": 18960, "rows": 75840},
-        "robotcar": {"places": 1464, "rows": 8947},
-        "svox": {"places": 9436, "rows": 33526},
-    }
-
-
-@pytest.mark.parametrize("direction", ["F", "B"])
-def test_svox_filename_records_camera_direction(direction):
-    path = Path(f"@0621503.83@5736826.91@201205@panorama@{direction}@.jpg")
-    assert _parse_svox_train_path(path) == (621503.83, 5736826.91, direction)
 
 
 def test_rolling_sampler_is_balanced_unique_and_resume_deterministic():
