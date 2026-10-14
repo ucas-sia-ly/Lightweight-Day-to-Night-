@@ -12,7 +12,7 @@ mkdir -p runs/reference/square_retest
 for model in $models
     "$python_bin" -m a2b_lightvpr.cli evaluate-reference-suite \
         --config "$registry" --model "$model" --database-encoder adapted --transform native \
-        --datasets robotcar_project svox_night tokyo_night msls_night robotcar_day svox_day svox_sun tokyo_day msls_day_val \
+        --datasets robotcar_seasons_night svox_night tokyo_night msls_night robotcar_seasons_day svox_day svox_sun tokyo_day msls_day_val \
         2>&1 | tee "runs/reference/square_retest/$model.log"
     set codes $pipestatus
     if test "$codes[1]" -ne 0

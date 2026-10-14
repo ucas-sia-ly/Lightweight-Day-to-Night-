@@ -3,10 +3,8 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-import math
 import random
 from collections import Counter
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -15,6 +13,7 @@ from PIL import Image
 from torch.utils.data import Dataset, Sampler
 
 from .config import DataConfig
+from .paths import resolve_manifest_image_path, resolve_resource_path
 from .transforms import GeneratorTrainTransform, PhotometricVPR, VPRTransform, patch_valid_mask
 
 FIXED_RANDOM_STATE = 0
@@ -28,57 +27,8 @@ def optional_float(value) -> float:
         return float("nan")
 
 
-@dataclass(frozen=True)
-class RobotCarRow:
-    split: str
-    role: str
-    domain: str
-    traverse: str
-    timestamp: str
-    easting: float
-    northing: float
-    yaw_deg: float
-    source_path: str
-    output_path: str
-
-    @property
-    def image_id(self) -> str:
-        key = f"{self.traverse}:{self.timestamp}:{self.role}"
-        return hashlib.sha1(key.encode("utf-8")).hexdigest()[:20]
-
-    @property
-    def place_id(self) -> str:
-        x = math.floor(self.easting / 10.0)
-        y = math.floor(self.northing / 10.0)
-        heading = math.floor((self.yaw_deg % 360.0) / 30.0)
-        return f"{x}:{y}:{heading}"
-
-
-def read_robotcar_manifest(path: str | Path) -> list[RobotCarRow]:
-    manifest = Path(path).expanduser().resolve()
-    repository_root = manifest.parents[3]
-    def resolve_source(value: str) -> str:
-        source = Path(value)
-        return str(source if source.is_absolute() else (repository_root / source).resolve())
-    with manifest.open(newline="", encoding="utf-8") as handle:
-        return [
-            RobotCarRow(
-                split=row["split"],
-                role=row["role"],
-                domain=row["domain"],
-                traverse=row["traverse"],
-                timestamp=row["timestamp"],
-                easting=float(row["easting"]),
-                northing=float(row["northing"]),
-                yaw_deg=float(row["yaw_deg"]),
-                source_path=resolve_source(row["source_path"]),
-                output_path=row["output_path"],
-            )
-            for row in csv.DictReader(handle)
-        ]
-
-
 def read_generator_manifest(path: str | Path, split: str = "train") -> list[dict[str, str]]:
+    path = resolve_resource_path(path)
     with Path(path).open(newline="", encoding="utf-8") as handle:
         rows = [row for row in csv.DictReader(handle) if row["split"] == split]
     audit_path = Path(path).with_suffix(".audit.json")
@@ -86,36 +36,34 @@ def read_generator_manifest(path: str | Path, split: str = "train") -> list[dict
         invalid = set(json.loads(audit_path.read_text(encoding="utf-8")).get("invalid_ids", []))
         rows = [row for row in rows if row.get("sample_id", row.get("pair_id")) not in invalid]
     rows = [row for row in rows if row.get("valid", "1").lower() not in {"0", "false", "no"}]
+    for row in rows:
+        for key in ("source_path", "target_path"):
+            if row.get(key):
+                row[key] = resolve_manifest_image_path(row[key], path)
     return rows
 
 
 def audit_data(config: DataConfig, *, decode: bool = False) -> dict:
-    rows = read_robotcar_manifest(config.robotcar_manifest)
-    protocol = json.loads(Path(config.robotcar_protocol).read_text(encoding="utf-8"))
-    traverses: dict[str, set[str]] = {}
-    for split in ("train", "val", "test"):
-        traverses[split] = {row.traverse for row in rows if row.split == split}
-    overlaps = {
-        f"{a}_{b}": sorted(traverses[a] & traverses[b])
-        for a, b in (("train", "val"), ("train", "test"), ("val", "test"))
-    }
-    if any(overlaps.values()):
-        raise ValueError(f"RobotCar traversal leakage detected: {overlaps}")
-    counts = Counter((row.split, row.role, row.domain) for row in rows)
-    missing: list[str] = []
-    checked = 0
+    """Audit training manifests independently of retired custom test protocols."""
+    generator_rows = read_generator_manifest(config.generator_manifest)
+    source_manifest = resolve_resource_path(config.vpr_source_manifest)
+    source_rows = read_generated_manifest(source_manifest) if source_manifest.is_file() else []
+    if any(row.get("split") != "train" for row in source_rows):
+        raise ValueError("VPR source manifest contains non-train rows")
+    image_paths = {row[key] for row in generator_rows for key in ("source_path", "target_path") if row.get(key)}
+    image_paths.update(row["source_path"] for row in source_rows if row.get("source_path"))
+    checked, missing = 0, []
     if decode:
-        for row in rows:
-            path = Path(row.source_path)
+        for value in sorted(image_paths):
+            path = Path(value)
             if not path.is_file():
                 missing.append(str(path))
                 continue
             with Image.open(path) as image:
                 image.verify()
             checked += 1
-    generator_rows = read_generator_manifest(config.generator_manifest)
     invalid_pose_fields: dict[str, dict[str, int]] = {}
-    generated_manifest = Path(config.generated_root) / "manifest.csv"
+    generated_manifest = resolve_resource_path(config.generated_root) / "manifest.csv"
     if generated_manifest.is_file():
         for row in read_generated_manifest(generated_manifest):
             dataset = row.get("dataset", "unknown")
@@ -128,19 +76,20 @@ def audit_data(config: DataConfig, *, decode: bool = False) -> dict:
                 except (TypeError, ValueError):
                     invalid_pose_fields.setdefault(dataset, {}).setdefault(field, 0)
                     invalid_pose_fields[dataset][field] += 1
+    seasons_root = resolve_resource_path(config.robotcar_seasons_root)
     result = {
-        "robotcar_counts": {"/".join(key): value for key, value in sorted(counts.items())},
         "generator_train_rows": len(generator_rows),
         "generator_datasets": dict(Counter(row["dataset"] for row in generator_rows)),
-        "traverses": {key: sorted(value) for key, value in traverses.items()},
-        "overlaps": overlaps,
+        "vpr_train_rows": len(source_rows),
+        "vpr_datasets": dict(Counter(row.get("dataset", "unknown") for row in source_rows)),
+        "robotcar_seasons_root": str(seasons_root),
+        "robotcar_seasons_available": (seasons_root / "images").is_dir(),
         "decoded": checked,
         "missing": missing,
-        "protocol_dataset": protocol.get("dataset"),
         "invalid_pose_fields": invalid_pose_fields,
     }
     if missing:
-        raise FileNotFoundError(f"Missing {len(missing)} RobotCar images; first={missing[0]}")
+        raise FileNotFoundError(f"Missing {len(missing)} training images; first={missing[0]}")
     return result
 
 
@@ -194,8 +143,14 @@ class BalancedGeneratorDataset(Dataset):
 
 
 def read_generated_manifest(path: str | Path) -> list[dict[str, str]]:
-    with Path(path).open(newline="", encoding="utf-8") as handle:
-        return list(csv.DictReader(handle))
+    path = resolve_resource_path(path)
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    for row in rows:
+        for key in ("source_path", "generated_path"):
+            if row.get(key):
+                row[key] = resolve_manifest_image_path(row[key], path)
+    return rows
 
 
 class PairedVPRDataset(Dataset):
@@ -764,19 +719,8 @@ class CoverageBalancedSampler(Sampler[int]):
         }
 
 
-def benchmark_rows(manifest: str | Path, split: str) -> tuple[list[RobotCarRow], list[RobotCarRow]]:
-    if split not in {"val", "test"}:
-        raise ValueError("Benchmark evaluation is restricted to val or test")
-    rows = read_robotcar_manifest(manifest)
-    database = [row for row in rows if row.split == split and row.role == "database"]
-    queries = [row for row in rows if row.split == split and row.role == "queries"]
-    if not database or not queries:
-        raise ValueError(f"Incomplete benchmark split: {split}")
-    return database, queries
-
-
 class ImagePathDataset(Dataset):
-    def __init__(self, rows: Iterable[RobotCarRow], transform: VPRTransform):
+    def __init__(self, rows: Iterable, transform: VPRTransform):
         self.rows = list(rows)
         self.transform = transform
 

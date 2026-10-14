@@ -11,4 +11,4 @@ REGISTRY=configs/references/crica_small_322.yaml
   --seed 0 --batch-size 1 --workers 4
 "$PYTHON_BIN" -m a2b_lightvpr.cli evaluate-reference-suite --config "$REGISTRY" \
   --model cricavpr-dinov2-s-gsv322-pca512 --database-encoder adapted --transform native \
-  --datasets robotcar_project svox_night msls_night tokyo_night robotcar_day svox_day svox_sun tokyo_day
+  --datasets robotcar_seasons_night svox_night msls_night tokyo_night robotcar_seasons_day svox_day svox_sun tokyo_day

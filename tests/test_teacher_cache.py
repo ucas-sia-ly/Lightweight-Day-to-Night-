@@ -44,7 +44,7 @@ def make_config(tmp_path):
             )
     checkpoint = tmp_path / "teacher.pt"
     checkpoint.write_bytes(b"fake checkpoint")
-    base = ExperimentConfig(DataConfig("robot.csv", "protocol.json", generated_root=str(generated)))
+    base = ExperimentConfig(DataConfig(generated_root=str(generated)))
     vpr = replace(
         base.vpr,
         loss_profile="v3",

@@ -7,7 +7,7 @@ from a2b_lightvpr.vpr.trainer import export_vpr_inference_checkpoint
 
 
 def test_training_checkpoint_conversion_is_model_exact_and_strips_training_assets(tmp_path):
-    config = ExperimentConfig(DataConfig("robot.csv", "protocol.json", "external.csv"))
+    config = ExperimentConfig(DataConfig(generator_manifest="external.csv"))
     model_state = {"encoder.weight": torch.randn(3, 4)}
     training = tmp_path / "training.pt"
     torch.save(
@@ -42,7 +42,7 @@ def test_training_checkpoint_conversion_is_model_exact_and_strips_training_asset
 
 
 def test_deployment_loader_rejects_checkpoint_dimension_mismatch(tmp_path):
-    config = ExperimentConfig(DataConfig("robot.csv", "protocol.json", "external.csv"))
+    config = ExperimentConfig(DataConfig(generator_manifest="external.csv"))
     checkpoint = tmp_path / "wrong-dimension.pt"
     torch.save({"kind": "vpr_inference", "descriptor_dim": 128, "model": {}}, checkpoint)
     with pytest.raises(ValueError, match="descriptor dimension"):
@@ -50,7 +50,7 @@ def test_deployment_loader_rejects_checkpoint_dimension_mismatch(tmp_path):
 
 
 def test_deployment_loader_rejects_checkpoint_seed_mismatch(tmp_path):
-    config = ExperimentConfig(DataConfig("robot.csv", "protocol.json", "external.csv"))
+    config = ExperimentConfig(DataConfig(generator_manifest="external.csv"))
     checkpoint = tmp_path / "wrong-seed.pt"
     torch.save({
         "kind": "vpr_inference",

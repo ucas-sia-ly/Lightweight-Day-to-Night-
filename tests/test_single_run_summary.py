@@ -8,7 +8,8 @@ from a2b_lightvpr.reporting.seed0_summary import REPORT_PROTOCOLS, summarize_cdn
 def _suite(path, dimension, value, fingerprint_suffix=""):
     datasets = {
         name: {
-            "recalls": {"1": value},
+            "recalls": None if name.startswith("robotcar_seasons_") else {"1": value},
+            "ground_truth_available": not name.startswith("robotcar_seasons_"),
             "evaluation_fingerprint": name + fingerprint_suffix,
         }
         for name in REPORT_PROTOCOLS
@@ -44,6 +45,9 @@ def test_single_run_summary_reports_deltas_without_statistics(tmp_path):
     assert report["dimensions"]["512"]["cdnd_delta"]["night_macro_recall1"] > 0
     assert not {"mean", "std", "ci95", "significant"} & set(report)
     assert set(report["capacity_delta_from_512"]) == {"128", "4096"}
+    assert report["night_macro_protocols"] == ["svox_night", "tokyo_night"]
+    assert report["dimensions"]["512"]["per_protocol"]["robotcar_seasons_night"]["delta"] is None
+    assert "robotcar_seasons_night" in report["dimensions"]["512"]["excluded"]["cdnd"]
 
 
 def test_single_run_summary_rejects_dimension_and_protocol_mismatches(tmp_path):
@@ -73,3 +77,20 @@ def test_single_run_summary_rejects_non_paired_inputs(tmp_path):
     candidate[512].write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="Non-paired 512-D"):
         summarize_cdnd_seed0(baseline, candidate, tmp_path / "bad-pair.json")
+
+
+def test_single_run_missing_supervised_protocol_does_not_shrink_macro(tmp_path):
+    baseline, candidate = {}, {}
+    for dimension in (128, 512, 4096):
+        baseline[dimension], candidate[dimension] = tmp_path / f"b{dimension}.json", tmp_path / f"c{dimension}.json"
+        _suite(baseline[dimension], dimension, 0.5)
+        _suite(candidate[dimension], dimension, 0.6)
+    payload = json.loads(candidate[512].read_text())
+    del payload["datasets"]["tokyo_night"]
+    candidate[512].write_text(json.dumps(payload))
+    output = tmp_path / "summary.json"
+    summarize_cdnd_seed0(baseline, candidate, output)
+    result = json.loads(output.read_text())["dimensions"]["512"]
+    assert result["cdnd"]["night_macro_recall1"] is None
+    assert result["cdnd_delta"]["night_macro_recall1"] is None
+    assert result["excluded"]["cdnd"]["tokyo_night"]["status"] == "not_evaluated"

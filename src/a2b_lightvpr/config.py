@@ -10,10 +10,15 @@ from typing import Any
 import yaml
 
 
+TENSORBOARD_FIELDS = (
+    "tensorboard_enabled", "tensorboard_log_dir", "tensorboard_log_interval",
+    "tensorboard_image_interval", "tensorboard_flush_secs",
+)
+
+
 @dataclass(frozen=True)
 class DataConfig:
-    robotcar_manifest: str
-    robotcar_protocol: str
+    robotcar_seasons_root: str = "/home/admin123/github/datasets/RobotCar-Seasons"
     generator_manifest: str = "data/manifests/generator_train.csv"
     vpr_source_manifest: str = "data/manifests/vpr_train.csv"
     generated_root: str = "data/generated/robotcar_train"
@@ -46,6 +51,11 @@ class GeneratorConfig:
     qs_mode: str = "global"
     qs_nce_identity: bool = False
     qs_netf: str = "mlp_sample"
+    tensorboard_enabled: bool = True
+    tensorboard_log_dir: str = ""
+    tensorboard_log_interval: int = 10
+    tensorboard_image_interval: int = 100
+    tensorboard_flush_secs: int = 30
 
 
 @dataclass(frozen=True)
@@ -123,15 +133,20 @@ class VPRConfig:
     stable_dustbin_gamma_max: float = 4.0
     stable_sinkhorn_iterations: int = 20
     stable_feature_fusion: str = "none"
+    tensorboard_enabled: bool = True
+    tensorboard_log_dir: str = ""
+    tensorboard_log_interval: int = 10
+    tensorboard_image_interval: int = 100
+    tensorboard_flush_secs: int = 30
 
 
 @dataclass(frozen=True)
 class EvalConfig:
-    positive_radius_m: float = 10.0
-    positive_yaw_deg: float = 30.0
+    positive_radius_m: float = 25.0
+    positive_yaw_deg: float | None = None
     recalls: tuple[int, ...] = (1, 5, 10)
-    protocol: str = "project"
-    datasets: tuple[str, ...] = ("robotcar",)
+    protocol: str = "standard"
+    datasets: tuple[str, ...] = ("msls_day_val",)
     database_domain: str = "day"
     fake_database_manifest: str = ""
 
@@ -151,6 +166,9 @@ class ExperimentConfig:
         # A checkpoint path is runtime state, not part of experiment identity.
         values["generator"]["resume"] = ""
         values["vpr"]["resume"] = ""
+        for section in ("generator", "vpr"):
+            for field_name in TENSORBOARD_FIELDS:
+                values[section].pop(field_name, None)
         payload = json.dumps(values, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -208,6 +226,18 @@ def apply_overrides(config: ExperimentConfig, overrides: list[str]) -> Experimen
 
 
 def validate_config(config: ExperimentConfig) -> None:
+    for name, cfg in (("generator", config.generator), ("vpr", config.vpr)):
+        if not isinstance(cfg.tensorboard_enabled, bool):
+            raise ValueError(f"{name}.tensorboard_enabled must be a boolean")
+        if not isinstance(cfg.tensorboard_log_dir, str):
+            raise ValueError(f"{name}.tensorboard_log_dir must be a string")
+        for field_name in ("tensorboard_log_interval", "tensorboard_flush_secs"):
+            value = getattr(cfg, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name}.{field_name} must be a positive integer")
+        value = cfg.tensorboard_image_interval
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name}.tensorboard_image_interval must be a non-negative integer")
     if config.generator.objective != "qsattn":
         raise ValueError("The only supported generator objective is qsattn")
     if config.generator.qs_mode != "global":
@@ -374,6 +404,12 @@ def validate_config(config: ExperimentConfig) -> None:
     ):
         raise ValueError("Fixed-budget selection must disable validation-based controls")
     expected_datasets = {"msls", "robotcar", "svox"}
+    if (
+        config.vpr.model_family == "stable_night_salad"
+        and set(config.vpr.datasets)
+        and set(config.vpr.datasets).issubset(expected_datasets)
+    ):
+        expected_datasets = set(config.vpr.datasets)
     if set(config.vpr.datasets) in ({"gsv_cities"}, {"robotcar"}, {"svox"}, {"msls"}):
         expected_datasets = set(config.vpr.datasets)
     if set(config.vpr.datasets) != expected_datasets:
@@ -443,8 +479,12 @@ def validate_config(config: ExperimentConfig) -> None:
         raise ValueError("classifier_warmup_epochs must be in [0, epochs)")
     if config.vpr.epoch_one_max_recall_drop < 0:
         raise ValueError("Epoch-one drop threshold cannot be negative")
-    if config.evaluation.protocol not in {"project", "paper"}:
-        raise ValueError("evaluation.protocol must be project or paper")
+    if config.evaluation.protocol != "standard":
+        raise ValueError("evaluation.protocol must be standard; the custom RobotCar protocols are retired")
+    if not config.evaluation.datasets or len(set(config.evaluation.datasets)) != len(config.evaluation.datasets):
+        raise ValueError("evaluation.datasets must contain unique validation datasets")
+    if set(config.evaluation.datasets) - {"msls_day_val", "svox_day_val"}:
+        raise ValueError("Training validation requires public msls_day_val or svox_day_val; test datasets cannot select checkpoints")
     if config.vpr.model_family == "stable_night_salad":
         if config.evaluation.database_domain not in {"day", "fake_night"}:
             raise ValueError("StableNight database_domain must be day or fake_night")

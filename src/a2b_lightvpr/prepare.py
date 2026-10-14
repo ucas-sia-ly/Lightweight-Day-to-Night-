@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 from collections import Counter
 from pathlib import Path
@@ -10,6 +9,7 @@ import numpy as np
 from PIL import Image
 
 from .clean_weather import filter_clear_weather
+from .paths import PROJECT_ROOT, resolve_manifest_image_path
 
 
 GENERATOR_FIELDS = (
@@ -102,8 +102,39 @@ def _parse_svox_train_path(path: Path) -> tuple[float, float, str] | None:
 def build_manifests(
     data_root: str | Path, output_dir: str | Path, *, decode_darkdriving: bool = True,
     clip_checkpoint: str | Path = "/home/admin123/.cache/clip/ViT-B-32.pt",
+    robotcar_training_dir: str | Path | None = None,
 ):
     root, output = Path(data_root), Path(output_dir)
+    # Reuse independently saved training identities and labels. Public Seasons
+    # test images and retired custom test manifests never seed training data.
+    training_dirs = ([Path(robotcar_training_dir)] if robotcar_training_dir is not None else
+                     [output, PROJECT_ROOT / "data/manifests_clean_night",
+                      PROJECT_ROOT / "data/manifests_robotcar_only"])
+
+    def retained_robotcar_rows(name, fields, required):
+        for folder in training_dirs:
+            manifest = folder / f"{name}.csv"
+            if not manifest.is_file():
+                continue
+            with manifest.open(newline="", encoding="utf-8") as handle:
+                rows = [row for row in csv.DictReader(handle) if row.get("dataset") == "robotcar"]
+            if not rows:
+                continue
+            if any(row.get("split") != "train" or any(not row.get(key) for key in required) for row in rows):
+                raise ValueError(f"Invalid RobotCar training manifest: {manifest}; refusing to overwrite existing training identities")
+            retained = []
+            for row in rows:
+                for key in ("source_path", "target_path"):
+                    if row.get(key):
+                        row[key] = resolve_manifest_image_path(row[key], manifest)
+                retained.append({key: row.get(key, "") for key in fields})
+            return retained
+        if robotcar_training_dir is not None:
+            raise FileNotFoundError(f"No RobotCar {name}.csv training rows in {robotcar_training_dir}")
+        return []
+
+    robot_generator = retained_robotcar_rows("generator_train", GENERATOR_FIELDS, ("sample_id", "source_path", "target_path"))
+    robot_vpr = retained_robotcar_rows("vpr_train", VPR_FIELDS, ("image_id", "place_id", "source_path"))
     generator_rows: list[dict[str, str]] = []
     audit_rows: list[dict[str, str]] = []
 
@@ -138,18 +169,7 @@ def build_manifests(
         if valid:
             generator_rows.append(row)
 
-    robot_manifest = root / "dvg_benchmark_paper/robotcar_nightday/manifest.csv"
-    robot_train = []
-    if robot_manifest.is_file():
-        robot_repository = robot_manifest.parents[3]
-        with robot_manifest.open(newline="", encoding="utf-8") as handle:
-            robot_train = [row for row in csv.DictReader(handle) if row["split"] == "train"]
-        def robot_path(row):
-            path = Path(row["source_path"])
-            return path if path.is_absolute() else (robot_repository / path).resolve()
-        robot_day = [robot_path(row) for row in robot_train if row["domain"] == "day"]
-        robot_night = [robot_path(row) for row in robot_train if row["domain"] == "night"]
-        generator_rows.extend(_paired_rows("robotcar", robot_day, robot_night))
+    generator_rows.extend(robot_generator)
 
     # BDD100K contributes diverse road day/night appearance, never VPR labels.
     labels = root / "bdd100k/bdd100k_labels_release/bdd100k/labels/bdd100k_labels_images_train.json"
@@ -170,23 +190,7 @@ def build_manifests(
         generator_rows.extend(_paired_rows("bdd100k", bdd_day, bdd_night))
 
     # MSLS training cities provide both appearance diversity and place supervision.
-    vpr_rows: list[dict[str, str]] = []
-    for row in robot_train:
-        if row["domain"] != "day" or row.get("role") != "database":
-            continue
-        easting, northing = float(row["easting"]), float(row["northing"])
-        yaw = float(row.get("yaw_deg", 0.0))
-        place = f"{int(easting // 10)}:{int(northing // 10)}:{int((yaw % 360) // 30)}"
-        image_id = hashlib.sha1(
-            f'{row["traverse"]}:{row["timestamp"]}:{row["role"]}'.encode()
-        ).hexdigest()[:20]
-        vpr_rows.append({
-            "image_id": image_id, "dataset": "robotcar", "split": "train",
-            "place_id": place, "route": row["traverse"],
-            "source_path": str(robot_path(row)),
-            "utm_e": row["easting"], "utm_n": row["northing"], "yaw": str(yaw),
-            "role": row["role"],
-        })
+    vpr_rows: list[dict[str, str]] = list(robot_vpr)
     msls = root / "MSLS/train_val"
     heldout_cities = {"cph", "sf"}
     msls_pools: dict[str, tuple[list[Path], list[Path]]] = {}

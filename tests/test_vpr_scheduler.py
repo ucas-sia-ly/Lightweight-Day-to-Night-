@@ -16,7 +16,7 @@ from a2b_lightvpr.vpr.losses import MarginCosineClassifier
 
 
 def test_plateau_scheduler_reduces_and_respects_minimum():
-    config = ExperimentConfig(DataConfig("robot.csv", "protocol.json"))
+    config = ExperimentConfig(DataConfig())
     cfg = replace(
         config.vpr,
         scheduler="plateau",
@@ -37,7 +37,7 @@ def test_plateau_scheduler_reduces_and_respects_minimum():
 
 
 def test_plateau_scheduler_state_resumes():
-    config = ExperimentConfig(DataConfig("robot.csv", "protocol.json"))
+    config = ExperimentConfig(DataConfig())
     cfg = replace(config.vpr, scheduler="plateau", scheduler_patience=0)
     parameter = torch.nn.Parameter(torch.ones(()))
     optimizer = torch.optim.SGD([parameter], lr=1e-3)
@@ -50,7 +50,7 @@ def test_plateau_scheduler_state_resumes():
 
 
 def test_convergence_requires_all_learning_rates_at_minimum():
-    config = ExperimentConfig(DataConfig("robot.csv", "protocol.json"))
+    config = ExperimentConfig(DataConfig())
     cfg = replace(
         config.vpr,
         encoder_lr=1e-4,
@@ -74,7 +74,7 @@ def test_partial_gradient_accumulation_uses_actual_group_size():
 
 
 def test_optimizer_uses_independent_learning_rates():
-    config = ExperimentConfig(DataConfig("robot.csv", "protocol.json"))
+    config = ExperimentConfig(DataConfig())
     cfg = replace(
         config.vpr,
         encoder_lr=1e-6,
@@ -97,7 +97,7 @@ def test_optimizer_uses_independent_learning_rates():
 
 
 def test_official_warmup_only_trains_classifier_then_unfreezes():
-    config = ExperimentConfig(DataConfig("robot.csv", "protocol.json"))
+    config = ExperimentConfig(DataConfig())
     cfg = replace(
         config.vpr,
         model_family="cosplace",
@@ -140,7 +140,7 @@ def test_frozen_batch_norm_keeps_running_statistics():
 
 
 def test_cosine_scheduler_reaches_configured_ratio_after_main_budget():
-    config = ExperimentConfig(DataConfig("robot.csv", "protocol.json"))
+    config = ExperimentConfig(DataConfig())
     cfg = replace(
         config.vpr,
         epochs=3,

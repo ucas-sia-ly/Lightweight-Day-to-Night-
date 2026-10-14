@@ -47,10 +47,14 @@ def load_vpr_model(config: ExperimentConfig, checkpoint: str | Path | None = Non
         backbone_repo=cfg.backbone_repo,
         backbone_checkpoint=cfg.backbone_checkpoint,
         backbone_trainable_blocks=cfg.backbone_trainable_blocks,
+        aggregator_repo=cfg.aggregator_repo,
         stable_dustbin_enabled=cfg.stable_dustbin_enabled,
         stable_dustbin_gamma_init=cfg.stable_dustbin_gamma_init,
         stable_dustbin_gamma_max=cfg.stable_dustbin_gamma_max,
         stable_sinkhorn_iterations=cfg.stable_sinkhorn_iterations,
+        # The inference checkpoint contains the complete model state. Avoid
+        # requiring an unrelated original initialization file after relocation.
+        load_initial_checkpoint=False,
     )
     model.load_state_dict(state["model"])
     return model, state, checkpoint

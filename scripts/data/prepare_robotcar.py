@@ -1,4 +1,4 @@
-"""Prepare audited RobotCar-only inputs and aggregate the ablation results."""
+"""Prepare RobotCar training inputs without any custom RobotCar test protocol."""
 import argparse
 import csv
 import io
@@ -7,40 +7,24 @@ from collections import Counter
 from pathlib import Path
 from a2b_lightvpr.config import load_config
 from a2b_lightvpr.checkpointing import file_sha256, write_json
+from a2b_lightvpr.paths import resolve_manifest_image_path
 
 
 def prepare():
     c = load_config('configs/experiments/single_dataset/robotcar_only_cdnd.yaml')
-    manifest = list(csv.DictReader(open(c.data.robotcar_manifest)))
-    paths = {s: set() for s in ('train','val','test')}
-    traverses = {s: set() for s in paths}
-    train_domains = {'day': set(), 'night': set()}
-    for r in manifest:
-        source_path = Path(r['source_path'])
-        if not source_path.is_absolute():
-            base = next(p.parent for p in Path(c.data.robotcar_manifest).resolve().parents if p.name == 'dataset')
-            source_path = base / source_path
-        resolved = str(source_path.resolve())
-        paths[r['split']].add(resolved)
-        traverses[r['split']].add(r['traverse'])
-        if r['split']=='train': train_domains[r['domain']].add(resolved)
-    for a,b in [('train','val'),('train','test'),('val','test')]:
-        if paths[a]&paths[b] or traverses[a]&traverses[b]:
-            raise ValueError(f'RobotCar split leakage: {a}/{b}')
     prepared={}
     for name in ('generator_train','vpr_train'):
         source=Path('data/manifests_clean_night')/f'{name}.csv'
         with source.open() as f:
             reader=csv.DictReader(f);fields=reader.fieldnames
             rows=[r for r in reader if r['dataset']=='robotcar' and r['split']=='train' and r.get('valid','1') not in ('0','false')]
-        if not rows: raise ValueError(f'Empty {name}')
+        if not rows: raise ValueError(f'Empty RobotCar training manifest: {name}')
         for r in rows:
-            for field,domain in [('source_path','day'),('target_path','night')]:
+            for field in ('source_path', 'target_path'):
                 if r.get(field):
-                    p=Path(r[field])
+                    p=Path(resolve_manifest_image_path(r[field], source))
                     if not p.is_file(): raise FileNotFoundError(p)
-                    if str(p.resolve()) not in train_domains[domain]:
-                        raise ValueError(f'Not a RobotCar training {domain} image: {p}')
+
         prepared[name]=(fields,rows,source)
     counts=Counter(r['place_id'] for r in prepared['vpr_train'][1])
     if min(counts.values())<2: raise ValueError('VPR place has fewer than two views')
@@ -55,8 +39,9 @@ def prepare():
     audit=dict(generator_day=len({r['source_path'] for r in gen if r['source_path']}),
         generator_night=len({r['target_path'] for r in gen if r['target_path']}),
         vpr_images=sum(counts.values()),vpr_places=len(counts),place_size_histogram=dict(Counter(counts.values())),
-        traverses={s:sorted(t) for s,t in traverses.items()},resolved_path_overlap=False,
-        hashes={str(p):file_sha256(p) for p in [Path(c.data.robotcar_manifest),Path(c.data.robotcar_protocol),
+        training_routes=sorted({r.get('route', '') for r in gen}),
+        split='train',
+        hashes={str(p):file_sha256(p) for p in [
             *[v[2] for v in prepared.values()],Path(c.data.generator_manifest),Path(c.data.vpr_source_manifest)]})
     write_json(audit,'data/manifests_robotcar_only/audit.json');print(json.dumps(audit,indent=2))
 
@@ -72,20 +57,22 @@ def summarize():
         models[name]['checkpoint_sha256']=file_sha256(ckpt)
         models[name]['input_size']=[320,320]
         models[name]['initialization']=cfg.vpr.init_checkpoint
-        for protocol in ('robotcar_project','robotcar_day'):
+        for protocol in ('robotcar_seasons_night','robotcar_seasons_day'):
             m=d['datasets'][protocol]
-            models[name]['datasets'][protocol]={k:m[k] for k in ('recalls','valid_queries','total_queries','query_protocol_fingerprint')}
-    for protocol in ('robotcar_project','robotcar_day'):
+            models[name]['datasets'][protocol]={k:m.get(k) for k in ('recalls','valid_queries','total_queries','query_protocol_fingerprint','ground_truth_available','evaluation_status')}
+    for protocol in ('robotcar_seasons_night','robotcar_seasons_day'):
         signatures={(m['datasets'][protocol]['query_protocol_fingerprint'],m['datasets'][protocol]['valid_queries']) for m in models.values()}
         if len(signatures)!=1: raise ValueError(f'Inconsistent evaluation protocol: {protocol}')
     delta={}
     for label,a,b in [('fake_minus_day','day_only','day_fake'),('cdnd_minus_fake','day_fake','cdnd')]:
-        delta[label]={p:{k:100*(models[b]['datasets'][p]['recalls'][k]-models[a]['datasets'][p]['recalls'][k]) for k in ('1','5','10')} for p in ('robotcar_project','robotcar_day')}
+        delta[label]={p: ({k:100*(models[b]['datasets'][p]['recalls'][k]-models[a]['datasets'][p]['recalls'][k]) for k in ('1','5','10')} if models[b]['datasets'][p]['recalls'] is not None and models[a]['datasets'][p]['recalls'] is not None else None) for p in ('robotcar_seasons_night','robotcar_seasons_day')}
     write_json({'models':models,'delta_percentage_points':delta,'seed':0},root/'ablation_summary.json')
     with (root/'ablation_summary.csv').open('w',newline='') as f:
-        w=csv.writer(f);w.writerow(['Method','Protocol','R@1 %','R@5 %','R@10 %','Valid queries'])
+        w=csv.writer(f);w.writerow(['Method','Dataset','R@1 %','R@5 %','R@10 %','Valid queries','Total queries','Evaluation status'])
         for n,m in models.items():
-            for p,v in m['datasets'].items(): w.writerow([n,p,*[100*v['recalls'][k] for k in ('1','5','10')],v['valid_queries']])
+            for p,v in m['datasets'].items():
+                recalls = [100*v['recalls'][k] for k in ('1','5','10')] if v['recalls'] is not None else ['', '', '']
+                w.writerow([n,p,*recalls,v['valid_queries'],v['total_queries'],v['evaluation_status']])
     print(root/'ablation_summary.json')
 
 if __name__=='__main__':

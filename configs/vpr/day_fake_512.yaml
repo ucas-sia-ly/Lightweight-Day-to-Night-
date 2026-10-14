@@ -1,12 +1,11 @@
 data:
-  robotcar_manifest: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/manifest.csv
-  robotcar_protocol: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/protocol.json
+  robotcar_seasons_root: /home/admin123/github/datasets/RobotCar-Seasons
   generator_manifest: data/manifests_clean_night/generator_train.csv
   vpr_source_manifest: data/manifests_clean_night/vpr_train.csv
   generated_root: data/generated/multidataset_qsattn_official_150k
-  tokyo_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/tokyo247
-  svox_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/svox
-  msls_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/MSLS
+  tokyo_root: /home/admin123/github/datasets/tokyo247
+  svox_root: /home/admin123/github/datasets/svox
+  msls_root: /home/admin123/github/datasets/MSLS
 vpr:
   output_dir: runs/vpr/cdnd_512/day_fake_pk_seed0
   model_family: mixvpr
@@ -31,7 +30,7 @@ vpr:
   evaluate_epoch_zero: true
   early_stopping: false
   epoch_one_max_recall_drop: 0.02
-  init_checkpoint: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/checkpoints/resnet50_MixVPR_512_channels(256)_rows(2).ckpt
+  init_checkpoint: /home/admin123/github/Lightweight-Day-to-Night/third_party/weights/resnet50_MixVPR_512_channels(256)_rows(2).ckpt
   datasets: [msls, robotcar, svox]
   min_class_images_by_dataset: {msls: 4, robotcar: 2, svox: 2}
   sampler: pk_balanced

@@ -1,12 +1,11 @@
 data:
-  robotcar_manifest: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/manifest.csv
-  robotcar_protocol: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/protocol.json
+  robotcar_seasons_root: /home/admin123/github/datasets/RobotCar-Seasons
   generator_manifest: data/manifests_clean_night/generator_train.csv
   vpr_source_manifest: data/manifests_clean_night/vpr_train.csv
   generated_root: data/generated/multidataset_qsattn_official_150k
-  tokyo_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/tokyo247
-  svox_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/svox
-  msls_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/MSLS
+  tokyo_root: /home/admin123/github/datasets/tokyo247
+  svox_root: /home/admin123/github/datasets/svox
+  msls_root: /home/admin123/github/datasets/MSLS
 vpr:
   output_dir: runs/vpr/stable_night_salad_544/day_fake_seed0
   model_family: stable_night_salad
@@ -15,8 +14,8 @@ vpr:
   image_height: 322
   image_width: 322
   backbone_name: dinov2_vits14_reg
-  backbone_repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
-  backbone_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth
+  backbone_repo: /home/admin123/.cache/torch/hub/facebookresearch_dinov2_main
+  backbone_checkpoint: /home/admin123/.cache/torch/hub/checkpoints/dinov2_vits14_reg4_pretrain.pth
   backbone_trainable_blocks: 2
   loss_profile: v2
   random_seed: 0
@@ -58,7 +57,8 @@ vpr:
   scheduler: cosine
   scheduler_min_lr_ratio: 0.01
 evaluation:
-  protocol: project
+  datasets: [msls_day_val]
+  protocol: standard
   database_domain: day
   fake_database_manifest: ""
   recalls: [1, 5, 10]

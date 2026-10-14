@@ -6,7 +6,7 @@ from a2b_lightvpr.config import DataConfig, ExperimentConfig, apply_overrides, l
 
 
 def base_config():
-    return ExperimentConfig(DataConfig("robot.csv", "protocol.json", "external.csv"))
+    return ExperimentConfig(DataConfig(generator_manifest="external.csv"))
 
 
 def test_only_official_qsattn_objective_is_allowed():
@@ -96,6 +96,34 @@ def test_relation_teacher_requires_relation_training():
 
 def test_reference_config_still_loads():
     assert load_config("configs/references/official.yaml")
+
+
+def test_config_uses_public_robotcar_and_day_validation_by_default():
+    config = base_config()
+    assert config.data.robotcar_seasons_root.endswith("/datasets/RobotCar-Seasons")
+    assert not hasattr(config.data, "robotcar_manifest")
+    assert not hasattr(config.data, "robotcar_protocol")
+    assert config.evaluation.protocol == "standard"
+    assert config.evaluation.datasets == ("msls_day_val",)
+    assert config.evaluation.positive_radius_m == 25.0
+    assert config.evaluation.positive_yaw_deg is None
+
+
+@pytest.mark.parametrize("key", ["data.robotcar_manifest=old.csv", "data.robotcar_protocol=old.json"])
+def test_retired_test_protocol_fields_are_not_active_overrides(key):
+    with pytest.raises(ValueError, match="Unknown config override"):
+        apply_overrides(base_config(), [key])
+
+
+@pytest.mark.parametrize("key,message", [
+    ("evaluation.protocol=project", "custom RobotCar protocols are retired"),
+    ("evaluation.protocol=paper", "custom RobotCar protocols are retired"),
+    ("evaluation.datasets=[robotcar_seasons_night]", "test datasets cannot select checkpoints"),
+    ("evaluation.datasets=[tokyo_night]", "test datasets cannot select checkpoints"),
+])
+def test_test_sets_cannot_replace_checkpoint_validation(key, message):
+    with pytest.raises(ValueError, match=message):
+        apply_overrides(base_config(), [key])
 
 
 def test_official_generator_config_has_no_public_seed():

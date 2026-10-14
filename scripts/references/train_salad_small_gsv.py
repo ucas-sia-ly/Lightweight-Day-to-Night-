@@ -18,10 +18,10 @@ from a2b_lightvpr.checkpointing import file_sha256, write_json
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--salad-repo", default="/home/admin123/diffusion_vpr_test/reference_code/salad")
-    parser.add_argument("--gsv-root", default="/home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/gsv-cities")
-    parser.add_argument("--dinov2-repo", default="/home/admin123/diffusion_vpr_test/reference_code/dinov2")
-    parser.add_argument("--dinov2-checkpoint", default="/home/admin123/diffusion_vpr_test/reference_code/salad/dinov2_vits14_pretrain.pth")
+    parser.add_argument("--salad-repo", default="/home/admin123/.cache/torch/hub/serizba_salad_main")
+    parser.add_argument("--gsv-root", default="/home/admin123/github/WORKSPACE/dataset/gsv-cities")
+    parser.add_argument("--dinov2-repo", default="/home/admin123/.cache/torch/hub/facebookresearch_dinov2_main")
+    parser.add_argument("--dinov2-checkpoint", default="/home/admin123/.cache/torch/hub/checkpoints/dinov2_vits14_pretrain.pth")
     parser.add_argument("--output", default="runs/reference/salad-dinov2-s-544-gsv")
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=60)

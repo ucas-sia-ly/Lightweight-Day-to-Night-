@@ -21,6 +21,6 @@ for group in day_fake cdnd
         exit $codes[1]
     end
     $python_bin -m a2b_lightvpr.cli evaluate-trained-suite --config "$cfg" --checkpoint "$out/model_best.pt" \
-        --datasets robotcar_project svox_night tokyo_night msls_night robotcar_day svox_day svox_sun tokyo_day msls_day_val; or exit 1
+        --datasets robotcar_seasons_night svox_night tokyo_night msls_night robotcar_seasons_day svox_day svox_sun tokyo_day msls_day_val; or exit 1
     $python_bin -m a2b_lightvpr.cli benchmark --config "$cfg" --checkpoint "$out/model_best.pt" --warmup 20 --iterations 100; or exit 1
 end

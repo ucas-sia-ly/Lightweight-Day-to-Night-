@@ -1,0 +1,25 @@
+# Linux x86_64 + NVIDIA GPU environment for A2B-LightVPR / StableNight-SALAD.
+# Run from the repository root: conda env create -f environment.yml
+# PyTorch pairing: https://pytorch.org/get-started/previous-versions/#v251
+name: a2b-lightvpr
+
+channels:
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  - python=3.12
+  - pip>=24
+  - fish>=3.6
+  - pip:
+      # Explicit CUDA wheel versions keep the torch/torchvision pair consistent.
+      - --extra-index-url https://download.pytorch.org/whl/cu124
+      - torch==2.5.1+cu124
+      - torchvision==0.20.1+cu124
+      # Stay on the NumPy 1.x ABI for older external reference implementations.
+      - numpy==1.26.4
+      # Reuse pyproject.toml instead of maintaining a second dependency list.
+      - "-e .[eval,test,paper,small-reference]"
+
+# DINOv2 repositories/checkpoints and datasets are configured in experiment YAML.
+# xFormers and additional official reference-repository environments are optional.

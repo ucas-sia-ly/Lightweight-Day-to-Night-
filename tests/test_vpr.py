@@ -30,7 +30,9 @@ def test_resnet50_aggregators_honor_512_contract(aggregator):
 
 @pytest.mark.parametrize("descriptor_dim,channels,rows", [(128, 64, 2), (512, 256, 2)])
 def test_mixvpr_matches_official_implementation(descriptor_dim, channels, rows):
-    path = Path("/home/admin123/diffusion_vpr_test/reference_code/MixVPR/models/aggregators/mixvpr.py")
+    path = Path(__file__).resolve().parents[1] / "third_party/MixVPR/models/aggregators/mixvpr.py"
+    if not path.is_file():
+        pytest.skip(f"Optional official MixVPR source unavailable: expected {path}")
     spec = importlib.util.spec_from_file_location("official_mixvpr", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -64,12 +66,9 @@ def test_mixvpr_descriptor_dimensions(descriptor_dim):
 def test_mixvpr_initialization_checkpoints_load_strictly(
     descriptor_dim, filename, expected_sha256
 ):
-    checkpoint = Path(
-        "/home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/checkpoints/"
-        + filename
-    )
+    checkpoint = Path(__file__).resolve().parents[1] / "third_party/weights" / filename
     if not checkpoint.is_file():
-        pytest.skip("Official MixVPR initialization checkpoint unavailable")
+        pytest.skip(f"Official MixVPR initialization checkpoint unavailable: expected {checkpoint}")
     assert hashlib.sha256(checkpoint.read_bytes()).hexdigest() == expected_sha256
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
     OfficialMixVPRModel(descriptor_dim).load_state_dict(state, strict=True)

@@ -32,7 +32,7 @@ def test_reference_suite_uses_shared_protocol_and_cache(tmp_path, monkeypatch):
     image = tmp_path / "image.png"
     Image.new("RGB", (8, 8), "white").save(image)
     config = ExperimentConfig(
-        DataConfig("robot.csv", "protocol.json", generated_root=str(generated))
+        DataConfig(generated_root=str(generated))
     )
     config = replace(
         config,
@@ -78,13 +78,13 @@ def test_reference_suite_uses_shared_protocol_and_cache(tmp_path, monkeypatch):
         model_name="nocplace",
         database_encoder="original",
         transform_name="unified",
-        datasets=("robotcar_project",),
+        datasets=("svox_night",),
         output_dir=output_dir,
     )
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert built == [str(checkpoint), str(database_checkpoint)]
-    assert calls == [(10.0, 30.0)]
-    metrics = payload["datasets"]["robotcar_project"]
+    assert calls == [(25.0, None)]
+    metrics = payload["datasets"]["svox_night"]
     assert len(metrics["query_protocol_fingerprint"]) == 64
     assert len(metrics["evaluation_fingerprint"]) == 64
     assert metrics["protocol_fingerprint"] == metrics["query_protocol_fingerprint"]
@@ -100,6 +100,6 @@ def test_reference_suite_uses_shared_protocol_and_cache(tmp_path, monkeypatch):
         model_name="nocplace",
         database_encoder="original",
         transform_name="unified",
-        datasets=("robotcar_project",),
+        datasets=("svox_night",),
         output_dir=output_dir,
     ) == output

@@ -5,6 +5,10 @@ import json
 
 from .config import apply_overrides, load_config
 from .data import audit_data
+from .resource_audit import audit_resources
+from .robotcar_seasons import (
+    CAMERAS, DAY_CONDITIONS, NIGHT_CONDITIONS, audit_robotcar_seasons, default_robotcar_seasons_root,
+)
 from .generator.trainer import train_generator
 from .generator.translate import translate_training_set
 from .prepare import build_manifests
@@ -44,12 +48,27 @@ def _parser() -> argparse.ArgumentParser:
 
     audit = common("audit-data")
     audit.add_argument("--decode", action="store_true")
+    resources = common("audit-resources")
+    resources.add_argument("--output", default="")
+    resources.add_argument("--skip-images", action="store_true")
+
+    def seasons_options(command):
+        command.add_argument("--data-root", default=str(default_robotcar_seasons_root()))
+        command.add_argument("--conditions", nargs="+", choices=NIGHT_CONDITIONS + DAY_CONDITIONS, default=list(NIGHT_CONDITIONS))
+        command.add_argument("--protocol", choices=["original", "v2"], default="v2")
+        command.add_argument("--cameras", nargs="+", choices=CAMERAS, default=None)
+        command.add_argument("--output", default="")
+
+    seasons_audit = commands.add_parser("audit-robotcar-seasons")
+    seasons_options(seasons_audit)
 
     prepare = commands.add_parser("prepare-data")
     prepare.add_argument("--data-root", required=True)
     prepare.add_argument("--output-dir", default="data/manifests_clean_night")
     prepare.add_argument("--skip-darkdriving-decode", action="store_true")
     prepare.add_argument("--clip-checkpoint", default="/home/admin123/.cache/clip/ViT-B-32.pt")
+    prepare.add_argument("--robotcar-training-dir", default=None,
+                         help="Directory of independent RobotCar training manifests")
 
     generator = common("train-generator")
     generator.add_argument("--smoke-steps", type=int, default=0)
@@ -176,7 +195,7 @@ def _parser() -> argparse.ArgumentParser:
 
     qualitative = common("export-qualitative-top1")
     qualitative.add_argument("--selection", required=True)
-    qualitative.add_argument("--search", action="store_true", help="Search all four night query sets and select examples automatically")
+    qualitative.add_argument("--search", action="store_true", help="Search the three labelled MSLS/SVOX/Tokyo night query sets and select examples automatically")
     qualitative.add_argument("--output-dir", required=True)
     qualitative.add_argument("--cache-dir", required=True)
     qualitative.add_argument("--batch-size", type=int, default=32)
@@ -220,11 +239,24 @@ def _keyed_paths(expressions: list[str], *, integer_keys: bool = False) -> dict:
 
 def main(argv=None) -> None:
     args = _parser().parse_args(argv)
+    if args.command == "audit-robotcar-seasons":
+        print(json.dumps(audit_robotcar_seasons(
+            args.data_root, output=args.output or None,
+            conditions=tuple(args.conditions), cameras=args.cameras, protocol=args.protocol,
+        ), indent=2, sort_keys=True))
+        return
+    if args.command == "audit-resources":
+        config = apply_overrides(load_config(args.config), args.set)
+        print(json.dumps(audit_resources(
+            config, output_path=args.output or None, scan_images=not args.skip_images,
+        ), indent=2, sort_keys=True))
+        return
     if args.command == "prepare-data":
         result = build_manifests(
             args.data_root, args.output_dir,
             decode_darkdriving=not args.skip_darkdriving_decode,
             clip_checkpoint=args.clip_checkpoint,
+            robotcar_training_dir=args.robotcar_training_dir,
         )
         print(json.dumps(result, indent=2, sort_keys=True))
         return

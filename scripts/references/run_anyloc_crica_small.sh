@@ -41,7 +41,7 @@ if [[ "$stage" == all || "$stage" == evaluate ]]; then
     for model in "${models[@]}"; do
         cli evaluate-reference-suite --config "$registry" --model "$model" \
             --database-encoder adapted --transform native \
-            --datasets robotcar_project svox_night msls_night tokyo_night robotcar_day svox_day svox_sun tokyo_day
+            --datasets robotcar_seasons_night svox_night msls_night tokyo_night robotcar_seasons_day svox_day svox_sun tokyo_day
     done
     resources=runs/reference/resource_benchmark_anyloc_crica_small.json
     if ! cli validate-reference-resources --registry "$registry" \

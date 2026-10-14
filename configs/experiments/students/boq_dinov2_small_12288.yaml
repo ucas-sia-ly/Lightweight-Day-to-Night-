@@ -1,15 +1,15 @@
 boq_small:
   output_dir: runs/reference/boq-dinov2-s-12288-distilled
-  gsv_cities_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/gsv-cities
-  dinov2_repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
-  boq_repo: /home/admin123/diffusion_vpr_test/reference_code/Bag-of-Queries
-  teacher_repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
+  gsv_cities_root: /home/admin123/github/WORKSPACE/dataset/gsv-cities
+  dinov2_repo: /home/admin123/.cache/torch/hub/facebookresearch_dinov2_main
+  boq_repo: /home/admin123/github/Lightweight-Day-to-Night/third_party/Bag-of-Queries
+  teacher_repo: /home/admin123/.cache/torch/hub/facebookresearch_dinov2_main
   teacher_backbone_name: dinov2_vitb14
-  teacher_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_12288.pth
+  teacher_checkpoint: /home/admin123/.cache/torch/hub/checkpoints/dinov2_12288.pth
   distillation_loss: scaled_mse
   distillation_weight: 1.0
   backbone_name: dinov2_vits14_reg
-  backbone_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth
+  backbone_checkpoint: /home/admin123/.cache/torch/hub/checkpoints/dinov2_vits14_reg4_pretrain.pth
   trainable_blocks: 2
   descriptor_dim: 12288
   train_image_size: 224

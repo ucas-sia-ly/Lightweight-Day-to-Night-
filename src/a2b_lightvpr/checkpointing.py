@@ -11,21 +11,42 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from .paths import resolve_resource_path
+
 
 SCHEMA_VERSION = 1
 
 
 def checkpoint_config_matches(state: dict, config, sections: tuple[str, ...] | None = None) -> bool:
     """Compare active training settings while tolerating retired metadata fields."""
-    if state.get("config_fingerprint") == config.fingerprint():
-        return True
     saved = deepcopy(state.get("config", {}))
     current = deepcopy(config.as_dict())
+    if (sections is None or "vpr" in sections or "evaluation" in sections) and (
+        {"robotcar_manifest", "robotcar_protocol"} & set(saved.get("data", {}))
+        or saved.get("evaluation", {}).get("protocol", "standard") != "standard"
+    ):
+        # Old validation-selected optimizer states are different experiments.
+        # They can still be loaded as inference weights, but not resumed under
+        # the replacement public validation protocol.
+        return False
+    if state.get("config_fingerprint") == config.fingerprint():
+        return True
     if not saved:
         return False
+    if sections is not None and "generator" in sections and "vpr" not in sections:
+        # Only these data controls affect unpaired generator training. Public
+        # evaluation roots, VPR labels and inference sizes do not change it.
+        generator_data_fields = ("generator_manifest", "dataset_weights", "crop_size", "load_short_side")
+        for values in (saved, current):
+            values["data"] = {key: values.get("data", {})[key]
+                              for key in generator_data_fields if key in values.get("data", {})}
+    from .config import TENSORBOARD_FIELDS
     for values in (saved, current):
         values.get("generator", {}).update(resume="", output_dir="")
         values.get("vpr", {}).update(resume="", output_dir="")
+        for section in ("generator", "vpr"):
+            for name in TENSORBOARD_FIELDS:
+                values.get(section, {}).pop(name, None)
     saved_vpr = saved.get("vpr", {})
     saved_vpr.setdefault("random_seed", int(saved_vpr.get("seed", 0)))
     saved_vpr.setdefault("relation_mask_self", True)
@@ -49,6 +70,11 @@ def checkpoint_config_matches(state: dict, config, sections: tuple[str, ...] | N
                 for key, value in reference.items()
                 if key in candidate
             }
+        if isinstance(candidate, str) and isinstance(reference, str) and candidate != reference:
+            if candidate.startswith("/") or reference.startswith("/"):
+                resolved = resolve_resource_path(candidate)
+                if resolved.exists() and resolved.resolve() == resolve_resource_path(reference).resolve():
+                    return reference
         return candidate
 
     if sections is not None:
@@ -59,32 +85,52 @@ def checkpoint_config_matches(state: dict, config, sections: tuple[str, ...] | N
 
 def file_sha256(path: str | Path) -> str:
     digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
+    with resolve_resource_path(path).open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
 
-def data_fingerprints(config, *, generated: str | Path | None = None) -> dict[str, str]:
-    paths = {
-        "robotcar_manifest": config.data.robotcar_manifest,
-        "robotcar_protocol": config.data.robotcar_protocol,
-        "generator_manifest": config.data.generator_manifest,
-        "vpr_source_manifest": config.data.vpr_source_manifest,
-    }
+def validation_resource_paths(config) -> dict[str, Path]:
+    """Exact public validation metadata consumed by checkpoint selection."""
+    paths = {}
+    for dataset in config.evaluation.datasets:
+        if dataset == "msls_day_val":
+            root = resolve_resource_path(config.data.msls_root)
+            for city in ("cph", "sf"):
+                for role in ("database", "query"):
+                    paths[f"validation_msls_{city}_{role}"] = root / "train_val" / city / role / "postprocessed.csv"
+        elif dataset == "svox_day_val":
+            root = resolve_resource_path(config.data.svox_root)
+            for role in ("gallery", "queries"):
+                paths[f"validation_svox_{role}"] = root / "images" / "val" / role
+        else:
+            raise ValueError(f"Unsupported public training validation dataset: {dataset}")
+    return paths
+
+
+def data_fingerprints(config, *, generated: str | Path | None = None, purpose: str = "vpr") -> dict[str, str]:
+    if purpose == "generator":
+        return {"generator_manifest": file_sha256(config.data.generator_manifest)}
+    if purpose != "vpr":
+        raise ValueError("Fingerprint purpose must be vpr or generator")
+    paths = {"vpr_source_manifest": config.data.vpr_source_manifest}
+    needs_validation = config.vpr.evaluate_epoch_zero or config.vpr.selection_rule == "validation_best"
+    if needs_validation:
+        paths.update(validation_resource_paths(config))
     if generated is not None:
         paths["generated_manifest"] = generated
-    # VPR checkpoints do not consume the generator training manifest.  Some
-    # deployments intentionally omit that optional asset (for example when
-    # training from an already-generated day+fake set), so do not make
-    # checkpoint creation fail merely because the unused default path is
-    # absent.  Manifests that are present are still fingerprinted normally;
-    # required VPR manifests retain the same strict behaviour below.
     fingerprints = {}
     for name, path in paths.items():
-        if name == "generator_manifest" and not Path(path).is_file():
-            continue
-        fingerprints[name] = file_sha256(path)
+        path = resolve_resource_path(path)
+        if path.is_dir():
+            # SVOX encodes its poses in image names rather than separate tables.
+            names = sorted(item.name for item in path.iterdir() if item.is_file())
+            if not names:
+                raise ValueError(f"Empty public validation image folder: {path}")
+            fingerprints[name] = hashlib.sha256(json.dumps(names, separators=(",", ":")).encode()).hexdigest()
+        else:
+            fingerprints[name] = file_sha256(path)
     return fingerprints
 
 

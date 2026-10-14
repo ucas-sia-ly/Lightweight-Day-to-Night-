@@ -13,6 +13,7 @@ from .references.models import (
     evaluation_fingerprint,
     query_protocol_fingerprint,
     suite_rows,
+    suite_protocol_metadata,
 )
 from .runtime import benchmark_model, load_vpr_model
 from .transforms import VPRTransform
@@ -20,24 +21,24 @@ from .vpr.model import resolve_initial_checkpoint
 
 
 SUITE_PROTOCOLS = {
-    "robotcar_project": ("robotcar", "test", 10.0, 30.0, "test"),
+    "robotcar_seasons_night": ("robotcar_seasons_night", "test", None, None, "test"),
     "svox_night": ("svox_night", "test", 25.0, None, "test"),
     "msls_night": ("msls_night", "val", 25.0, None, "validation"),
     "tokyo_night": ("tokyo_night", "test", 25.0, None, "test"),
     "tokyo_sunset": ("tokyo_sunset", "test", 25.0, None, "test"),
     "msls_day_val": ("msls_day_val", "val", 25.0, None, "validation"),
     "svox_day_val": ("svox_day_val", "val", 25.0, None, "validation"),
-    "robotcar_day": ("robotcar_day", "test", 10.0, 30.0, "test"),
+    "robotcar_seasons_day": ("robotcar_seasons_day", "test", None, None, "test"),
     "svox_day": ("svox_day", "test", 25.0, None, "test"),
     "svox_sun": ("svox_sun", "test", 25.0, None, "test"),
     "tokyo_day": ("tokyo_day", "test", 25.0, None, "test"),
 }
 NIGHT_PROTOCOLS = (
-    "robotcar_project", "svox_night", "msls_night", "tokyo_night",
+    "robotcar_seasons_night", "svox_night", "msls_night", "tokyo_night",
     "tokyo_sunset",
 )
 DAY_PROTOCOLS = (
-    "msls_day_val", "svox_day_val", "robotcar_day", "svox_day", "svox_sun",
+    "msls_day_val", "svox_day_val", "robotcar_seasons_day", "svox_day", "svox_sun",
     "tokyo_day",
 )
 def expand_suite_datasets(datasets: tuple[str, ...]):
@@ -63,10 +64,11 @@ def _suite_summary_values(payload: dict, selected: tuple[str, ...]) -> dict:
         metrics = payload["datasets"][name]
         namespace = SUITE_PROTOCOLS[name][4]
         prefix = f"{namespace}/{name}"
-        for recall, value in metrics["recalls"].items():
+        for recall, value in (metrics.get("recalls") or {}).items():
             values[f"{prefix}/recall_at_{recall}"] = value
         values[f"{prefix}/mrr"] = metrics["mrr"]
         values[f"{prefix}/valid_queries"] = metrics["valid_queries"]
+        values[f"{prefix}/evaluation_status"] = metrics.get("evaluation_status", "measured")
         for key in (
             "query_protocol_fingerprint", "evaluation_fingerprint",
             "protocol_fingerprint",
@@ -142,13 +144,16 @@ def evaluate_trained_suite(
                 config.vpr.image_height, config.vpr.image_width
             ]
             and cached.get("random_seed", 0) == config.vpr.random_seed
+            and cached.get("evaluation_recalls") == list(config.evaluation.recalls)
             and (not stable_night or (
                 cached.get("stable_head_options") == stable_head_options
-                and cached.get("evaluation_recalls") == list(config.evaluation.recalls)
             ))
         )
         if cache_matches:
             changed = False
+            for name in set(cached.get("datasets", {})) - set(SUITE_PROTOCOLS):
+                del cached["datasets"][name]
+                changed = True
             training_identity = {
                 "train_domains": config.vpr.train_domains,
                 "cross_domain_aux": config.vpr.cross_domain_aux,
@@ -181,17 +186,10 @@ def evaluate_trained_suite(
                 if (
                     metrics.get("query_protocol_fingerprint") != query_fingerprint
                     or metrics.get("evaluation_fingerprint") != eval_fingerprint
+                    or any(metrics.get(key) != value for key, value in suite_protocol_metadata(config, dataset).items())
                 ):
-                    if stable_night:
-                        # Changed Query/DB rows or positive protocol invalidate
-                        # recalls; never relabel stale measurements as current.
-                        del cached["datasets"][name]
-                        changed = True
-                        continue
-                    metrics["query_protocol_fingerprint"] = query_fingerprint
-                    metrics["evaluation_fingerprint"] = eval_fingerprint
-                    metrics["protocol_fingerprint"] = query_fingerprint
-                    write_json(metrics, output_dir / name / "metrics.json")
+                    # Changed rows or transforms require new measurements/rankings.
+                    del cached["datasets"][name]
                     changed = True
             if set(selected).issubset(cached.get("datasets", {})):
                 if changed:
@@ -234,7 +232,11 @@ def evaluate_trained_suite(
         initial_checkpoint = Path(resolve_initial_checkpoint(
             initialization_checkpoint, config.vpr.descriptor_dim
         ))
-        payload["initial_checkpoint_sha256"] = file_sha256(initial_checkpoint)
+        if initial_checkpoint.is_file():
+            payload["initial_checkpoint_sha256"] = file_sha256(initial_checkpoint)
+        else:
+            payload["initial_checkpoint_sha256"] = ""
+            payload["initial_checkpoint_missing"] = str(initial_checkpoint)
     if "benchmark" not in payload:
         payload["benchmark"] = benchmark_model(
             config, checkpoint_path, warmup=10, iterations=100
@@ -258,6 +260,7 @@ def evaluate_trained_suite(
             max(1, config.vpr.batch_size * 2), config.vpr.workers,
         )
         metrics.update({
+            **suite_protocol_metadata(config, dataset),
             "dataset": dataset,
             "split": split,
             "positive_radius_m": radius,

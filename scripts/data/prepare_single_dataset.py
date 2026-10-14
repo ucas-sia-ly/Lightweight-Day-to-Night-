@@ -3,14 +3,17 @@ import argparse,csv,json
 from pathlib import Path
 from prepare_multidataset_qsattn import write_csv
 from a2b_lightvpr.checkpointing import file_sha256,write_json
+from a2b_lightvpr.paths import resolve_manifest_image_path,resolve_resource_path
 
 def prepare(ds):
     root=Path('data/generated/multidataset_qsattn')
-    rows=list(csv.DictReader((root/'manifest.csv').open()))
+    manifest=root/'manifest.csv'
+    rows=list(csv.DictReader(manifest.open()))
     selected=[r for r in rows if r['dataset']==ds]
-    source=list(csv.DictReader(open(f'data/manifests_multidataset_qsattn/{ds}_vpr_train.csv')))
+    source_manifest=Path(f'data/manifests_multidataset_qsattn/{ds}_vpr_train.csv')
+    source=list(csv.DictReader(source_manifest.open()))
     expected={r['image_id']:r for r in source}
-    checkpoint=Path(f'runs/generator/qsattn_{ds}_30000_seed0/generator_final.pt')
+    checkpoint=resolve_resource_path(f'runs/generator/qsattn_{ds}_30000_seed0/generator_final.pt')
     sha=file_sha256(checkpoint)
     meta=json.loads((root/ds/'translation_metadata.json').read_text())
     if meta['checkpoint_sha256']!=sha or meta['checkpoint_step']!=30000:raise ValueError('Wrong generator')
@@ -18,10 +21,13 @@ def prepare(ds):
     for r in selected:
         k=r['image_id']
         if k in seen or k not in expected or r['split']!='train' or r['generator_sha256']!=sha:raise ValueError('Invalid selected row')
-        if Path(r['source_path']).resolve()!=Path(expected[k]['source_path']).resolve() or r['place_id']!=expected[k]['place_id']:raise ValueError('Source mismatch')
-        if not Path(r['generated_path']).resolve().is_relative_to((root/ds).resolve()):raise ValueError('Wrong generator directory')
+        source_image=Path(resolve_manifest_image_path(r['source_path'],manifest)).resolve()
+        expected_image=Path(resolve_manifest_image_path(expected[k]['source_path'],source_manifest)).resolve()
+        if source_image!=expected_image or r['place_id']!=expected[k]['place_id']:raise ValueError('Source mismatch')
+        if not Path(resolve_manifest_image_path(r['generated_path'],manifest)).resolve().is_relative_to((root/ds).resolve()):raise ValueError('Wrong generator directory')
         for field in ['source_path','generated_path']:
-            if not Path(r[field]).is_file():raise FileNotFoundError(r[field])
+            resolved=Path(resolve_manifest_image_path(r[field],manifest))
+            if not resolved.is_file():raise FileNotFoundError(f'{field} missing: {r[field]} (resolved: {resolved})')
         seen.add(k)
     if seen!=set(expected):raise ValueError('Incomplete translated dataset')
     dest=Path(f'data/generated/{ds}_only_qsattn30k/manifest.csv')

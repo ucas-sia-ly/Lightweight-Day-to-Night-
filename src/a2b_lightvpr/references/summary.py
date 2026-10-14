@@ -5,10 +5,9 @@ from pathlib import Path
 
 from ..checkpointing import write_json
 from .models import _registry
+from ..reporting.protocols import (DAY_MACRO, NIGHT_MACRO, REPORT_PROTOCOLS,
+                                  excluded, macro, protocol_result)
 
-
-NIGHT_MACRO = ("robotcar_project", "svox_night", "tokyo_night")
-DAY_MACRO = ("robotcar_day", "svox_day", "svox_sun", "tokyo_day")
 
 
 def summarize_small_references(
@@ -39,34 +38,24 @@ def summarize_small_references(
         if not summary_path.is_file() or name not in resources:
             raise FileNotFoundError(f"Incomplete Small-reference artifacts for {name}")
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        datasets = summary["datasets"]
-        for protocol in (*NIGHT_MACRO, *DAY_MACRO):
-            if protocol not in datasets:
-                raise ValueError(f"{name} is missing protocol {protocol}")
         models[name] = {
             "backbone": spec.get("backbone", ""),
             "descriptor_dim": int(spec["descriptor_dim"]),
             "official_checkpoint": bool(spec.get("official_checkpoint", True)),
             "training_status": spec.get("training_status", "official"),
             "per_protocol": {
-                protocol: {
-                    "recalls": metrics["recalls"],
-                    "valid_queries": metrics["valid_queries"],
-                    "evaluation_fingerprint": metrics["evaluation_fingerprint"],
-                }
-                for protocol, metrics in datasets.items()
+                protocol: protocol_result(summary, protocol)
+                for protocol in REPORT_PROTOCOLS
             },
-            "night_macro_recall1": sum(
-                datasets[key]["recalls"]["1"] for key in NIGHT_MACRO
-            ) / len(NIGHT_MACRO),
-            "day_macro_recall1": sum(
-                datasets[key]["recalls"]["1"] for key in DAY_MACRO
-            ) / len(DAY_MACRO),
+            "night_macro_recall1": macro(summary, NIGHT_MACRO),
+            "day_macro_recall1": macro(summary, DAY_MACRO),
+            "excluded": excluded(summary),
             "resources": resources[name],
         }
     output = Path(output)
     payload = {
         "schema": "dinov2_small_comparison_v1",
+        "macro_definition": "fixed_supervised_protocols_v2",
         "night_macro_protocols": list(NIGHT_MACRO),
         "day_macro_protocols": list(DAY_MACRO),
         "models": models,

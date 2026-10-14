@@ -24,8 +24,7 @@ from torchvision.transforms import functional as TF
 
 from ..checkpointing import file_sha256, write_json
 from ..config import ExperimentConfig
-from ..data import benchmark_rows, read_robotcar_manifest
-from ..evaluation import extract_descriptors, positive_indices, retrieval_metrics
+from ..evaluation import extract_descriptors, positive_indices, retrieval_metrics, search_topk_descriptors
 from ..transforms import IMAGENET_MEAN, IMAGENET_STD, VPRTransform
 from ..vpr.model import build_descriptor_model, eigenplaces_checkpoint
 from ..vpr.anyloc import AnyLocSmallModel
@@ -44,7 +43,7 @@ class SuiteRow:
 
 
 def query_protocol_fingerprint(
-    database, queries, radius: float, yaw: float | None
+    database, queries, radius: float | None, yaw: float | None
 ) -> str:
     """Hash retrieval rows and the positive-set definition, but not preprocessing."""
     digest = hashlib.sha256()
@@ -59,6 +58,7 @@ def query_protocol_fingerprint(
                         str(getattr(row, "easting", "")),
                         str(getattr(row, "northing", "")),
                         str(getattr(row, "yaw_deg", "")),
+                        str(getattr(row, "ground_truth_available", True)),
                     )
                 ).encode("utf-8")
             )
@@ -261,9 +261,14 @@ def fetch_reference_model(path: str | Path, model_name: str) -> dict:
 
 
 def _strict_state(model, checkpoint: str | Path):
-    numpy_core = getattr(np, "_core", np.core)
+    # NumPy 1.26 has a compatibility _core package that may not export
+    # multiarray until its submodule is imported; older NumPy only has core.
+    try:
+        numpy_multiarray = importlib.import_module("numpy._core.multiarray")
+    except ModuleNotFoundError:
+        numpy_multiarray = importlib.import_module("numpy.core.multiarray")
     safe_numpy_globals = (
-        numpy_core.multiarray._reconstruct,
+        numpy_multiarray._reconstruct,
         np.ndarray,
         np.dtype,
         type(np.dtype(np.uint32)),
@@ -690,25 +695,13 @@ def _tokyo_rows(root: Path, condition: str):
     return database, queries
 
 
-def _robotcar_day_rows(manifest: str | Path):
-    rows = read_robotcar_manifest(manifest)
-    database_traverse = "2014-07-14-14-49-50"
-    query_traverse = "2015-08-12-15-04-18"
-    database = [row for row in rows if row.traverse == database_traverse]
-    queries = [row for row in rows if row.traverse == query_traverse]
-    if not database or not queries:
-        raise ValueError(
-            "RobotCar day protocol requires traversals "
-            f"{database_traverse} and {query_traverse}"
-        )
-    return database, queries
-
-
 def suite_rows(config: ExperimentConfig, dataset: str, split: str = "test"):
-    if dataset == "robotcar":
-        return benchmark_rows(config.data.robotcar_manifest, split)
-    if dataset == "robotcar_day":
-        return _robotcar_day_rows(config.data.robotcar_manifest)
+    if dataset in {"robotcar_seasons_night", "robotcar_seasons_day"}:
+        if split != "test":
+            raise ValueError("RobotCar Seasons public test cannot be used for training validation")
+        from ..robotcar_seasons import DAY_CONDITIONS, NIGHT_CONDITIONS, robotcar_seasons_rows
+        conditions = NIGHT_CONDITIONS if dataset.endswith("night") else DAY_CONDITIONS
+        return robotcar_seasons_rows(config.data.robotcar_seasons_root, conditions=conditions, protocol="v2")
     if dataset == "svox_night":
         return _svox_rows(Path(config.data.svox_root), split, "night")
     if dataset == "svox_day_val":
@@ -726,12 +719,44 @@ def suite_rows(config: ExperimentConfig, dataset: str, split: str = "test"):
     raise ValueError(f"Unsupported suite dataset: {dataset}")
 
 
+def suite_protocol_metadata(config, dataset):
+    if dataset in {"robotcar_seasons_night", "robotcar_seasons_day"}:
+        from ..robotcar_seasons import V2_README, _metadata_hashes
+        return {
+            "public_protocol": "robotcar_seasons_v2",
+            "camera": "rear",
+            "official_readme": V2_README,
+            "split_metadata_sha256": _metadata_hashes(Path(config.data.robotcar_seasons_root), "v2"),
+            "ground_truth_status": "official_test_query_poses_not_public",
+        }
+    return {}
+
+
 def evaluate_dual_encoder(
-    database_model, query_model, database, queries, transform, radius: float,
+    database_model, query_model, database, queries, transform, radius: float | None,
     yaw: float | None, recalls: tuple[int, ...], device, batch_size: int, workers: int,
 ):
     database_descriptors = extract_descriptors(database_model, database, transform, device, batch_size, workers)
     query_descriptors = extract_descriptors(query_model, queries, transform, device, batch_size, workers)
+    if any(not getattr(row, "ground_truth_available", True) for row in (*database, *queries)):
+        scores, indices = search_topk_descriptors(database_descriptors, query_descriptors, max(recalls))
+        predictions = []
+        for query, query_scores, query_indices in zip(queries, scores, indices):
+            predictions.append({
+                "query_id": getattr(query, "image_id", query.source_path),
+                "query_path": query.source_path,
+                "condition": getattr(query, "condition", ""),
+                "camera": getattr(query, "camera", ""),
+                "matches": [{"database_id": getattr(database[int(index)], "image_id", database[int(index)].source_path),
+                             "database_path": database[int(index)].source_path,
+                             "score": float(score)} for score, index in zip(query_scores, query_indices)],
+            })
+        return {"recalls": None, "mrr": None, "valid_queries": None,
+                "total_queries": len(queries), "ground_truth_available": False,
+                "evaluation_status": "retrieval_only_no_public_test_gt",
+                "retrieval_top_k": int(indices.shape[1]), "retrieval_predictions": predictions}
+    if radius is None:
+        raise ValueError("Measured Recall requires an explicit positive radius")
     if yaw is None:
         db_xy = np.asarray([(row.easting, row.northing) for row in database])
         positives = [
@@ -740,4 +765,6 @@ def evaluate_dual_encoder(
         ]
     else:
         positives = positive_indices(database, queries, radius, yaw)
-    return retrieval_metrics(database_descriptors, query_descriptors, positives, recalls)
+    metrics = retrieval_metrics(database_descriptors, query_descriptors, positives, recalls)
+    metrics.update(ground_truth_available=True, evaluation_status="measured")
+    return metrics

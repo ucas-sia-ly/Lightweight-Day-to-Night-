@@ -12,49 +12,33 @@ from a2b_lightvpr.prepare import EXPECTED_VPR_ELIGIBLE, _parse_svox_train_path
 from a2b_lightvpr.transforms import VPRTransform
 
 
-FIELDS = [
-    "split", "role", "protocol_role", "domain", "traverse", "timestamp",
-    "easting", "northing", "yaw_rad", "yaw_deg", "source_path", "output_path",
-]
-
-
-def write_fixture(root: Path, leak=False):
-    robot = root / "robot.csv"
-    with robot.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDS)
-        writer.writeheader()
-        for index, split in enumerate(("train", "val", "test")):
-            row = dict.fromkeys(FIELDS, "")
-            row.update(
-                split=split,
-                role="database",
-                domain="day",
-                traverse="same" if leak else split,
-                timestamp=str(index),
-                easting="0",
-                northing="0",
-                yaw_deg="0",
-                source_path=__file__,
-            )
-            writer.writerow(row)
-    external = root / "external.csv"
-    with external.open("w", newline="", encoding="utf-8") as handle:
+def write_fixture(root: Path, *, split="train"):
+    generator = root / "generator.csv"
+    with generator.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=["pair_id", "dataset", "split", "route", "paired", "source_path", "target_path"])
         writer.writeheader()
-        writer.writerow({"pair_id": "1", "dataset": "x", "split": "train", "route": "r", "paired": "0", "source_path": __file__, "target_path": __file__})
-    protocol = root / "protocol.json"
-    protocol.write_text(json.dumps({"dataset": "fixture"}))
-    return DataConfig(str(robot), str(protocol), str(external))
+        writer.writerow({"pair_id": "1", "dataset": "robotcar", "split": "train", "route": "train-route", "paired": "0", "source_path": __file__, "target_path": __file__})
+    sources = root / "source.csv"
+    with sources.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["image_id", "dataset", "split", "place_id", "source_path"])
+        writer.writeheader()
+        writer.writerow({"image_id": "i", "dataset": "robotcar", "split": split, "place_id": "p", "source_path": __file__})
+    return DataConfig(robotcar_seasons_root=str(root / "missing-public-test"),
+                      generator_manifest=str(generator), vpr_source_manifest=str(sources),
+                      generated_root=str(root / "generated"))
 
 
-def test_audit_accepts_disjoint_traversals(tmp_path):
+def test_training_audit_does_not_require_any_robotcar_test_protocol(tmp_path):
     result = audit_data(write_fixture(tmp_path))
-    assert result["generator_train_rows"] == 1
+    assert result["generator_train_rows"] == result["vpr_train_rows"] == 1
+    assert result["generator_datasets"] == {"robotcar": 1}
+    assert not result["robotcar_seasons_available"]
+    assert "protocol_dataset" not in result and "robotcar_counts" not in result
 
 
-def test_audit_rejects_traversal_leakage(tmp_path):
-    with pytest.raises(ValueError, match="leakage"):
-        audit_data(write_fixture(tmp_path, leak=True))
+def test_training_audit_rejects_non_train_source_rows(tmp_path):
+    with pytest.raises(ValueError, match="non-train"):
+        audit_data(write_fixture(tmp_path, split="test"))
 
 
 def test_vpr_training_rejects_non_train_generated_rows(tmp_path):

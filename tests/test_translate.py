@@ -5,7 +5,7 @@ from a2b_lightvpr.generator.translate import validate_translation_checkpoint
 
 
 def test_full_translation_requires_matching_final_checkpoint():
-    config = ExperimentConfig(DataConfig("robot.csv", "protocol.json"))
+    config = ExperimentConfig(DataConfig())
     state = {
         "kind": "generator_inference",
         "step": config.generator.max_steps,
@@ -18,7 +18,7 @@ def test_full_translation_requires_matching_final_checkpoint():
 
 
 def test_smoke_translation_rejects_wrong_objective():
-    config = ExperimentConfig(DataConfig("robot.csv", "protocol.json"))
+    config = ExperimentConfig(DataConfig())
     state = {
         "kind": "generator_inference",
         "step": 1,

@@ -11,8 +11,8 @@ from tqdm.auto import tqdm
 
 from .checkpointing import file_sha256, write_json
 from .config import EvalConfig
-from .data import ImagePathDataset, RobotCarRow, benchmark_rows
-from .transforms import VPRTransform
+from .data import ImagePathDataset
+from .paths import resolve_resource_path
 
 
 def resolve_database_domain(database, evaluation: EvalConfig, split: str, queries=()):
@@ -30,7 +30,7 @@ def resolve_database_domain(database, evaluation: EvalConfig, split: str, querie
     manifest = Path(evaluation.fake_database_manifest).expanduser().resolve()
     def canonical(value):
         path = Path(value).expanduser()
-        return str((path if path.is_absolute() else manifest.parent / path).resolve())
+        return str(resolve_resource_path(path if path.is_absolute() else manifest.parent / path).resolve())
     with manifest.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         if not {"source_path", "generated_path"}.issubset(reader.fieldnames or []):
@@ -71,11 +71,13 @@ def circular_yaw_difference(first: np.ndarray, second: np.ndarray) -> np.ndarray
 
 
 def positive_indices(
-    database: list[RobotCarRow],
-    queries: list[RobotCarRow],
+    database: list,
+    queries: list,
     radius_m: float,
     yaw_deg: float,
 ) -> list[np.ndarray]:
+    if any(not getattr(row, "ground_truth_available", True) for row in (*database, *queries)):
+        raise ValueError("Positive indices require measured ground truth; public test poses are unavailable")
     db_xy = np.asarray([(row.easting, row.northing) for row in database], dtype=np.float64)
     db_yaw = np.asarray([row.yaw_deg for row in database], dtype=np.float64)
     positives = []
@@ -86,26 +88,50 @@ def positive_indices(
     return positives
 
 
+def search_topk_descriptors(database_descriptors, query_descriptors, top_k: int):
+    """Exact inner-product retrieval, also usable when Query ground truth is private."""
+    database_descriptors = np.asarray(database_descriptors, dtype=np.float32)
+    query_descriptors = np.asarray(query_descriptors, dtype=np.float32)
+    if (
+        database_descriptors.ndim != 2 or query_descriptors.ndim != 2
+        or database_descriptors.shape[1] != query_descriptors.shape[1]
+        or not len(database_descriptors) or not len(query_descriptors)
+        or database_descriptors.shape[1] == 0
+    ):
+        raise ValueError("Retrieval needs non-empty, matching descriptor matrices")
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
+        raise ValueError("top_k must be a positive integer")
+    if not np.isfinite(database_descriptors).all() or not np.isfinite(query_descriptors).all():
+        raise ValueError("Retrieval descriptors must be finite")
+    maximum = min(top_k, len(database_descriptors))
+    try:
+        import faiss
+
+        index = faiss.IndexFlatIP(database_descriptors.shape[1])
+        index.add(database_descriptors)
+        return index.search(query_descriptors, maximum)
+    except ImportError:
+        # Bound memory instead of materializing the entire Query x Database matrix.
+        scores = np.empty((len(query_descriptors), maximum), dtype=np.float32)
+        predictions = np.empty((len(query_descriptors), maximum), dtype=np.int64)
+        for start in range(0, len(query_descriptors), 128):
+            similarities = query_descriptors[start:start + 128] @ database_descriptors.T
+            candidates = np.argpartition(-similarities, maximum - 1, axis=1)[:, :maximum]
+            candidate_scores = np.take_along_axis(similarities, candidates, axis=1)
+            order = candidate_scores.argsort(axis=1)[:, ::-1]
+            end = start + len(similarities)
+            predictions[start:end] = np.take_along_axis(candidates, order, axis=1)
+            scores[start:end] = np.take_along_axis(candidate_scores, order, axis=1)
+        return scores, predictions
+
+
 def retrieval_metrics(
     database_descriptors: np.ndarray,
     query_descriptors: np.ndarray,
     positives: list[np.ndarray],
     recall_values: tuple[int, ...],
 ) -> dict:
-    database_descriptors = np.asarray(database_descriptors, dtype=np.float32)
-    query_descriptors = np.asarray(query_descriptors, dtype=np.float32)
-    maximum = min(max(recall_values), len(database_descriptors))
-    try:
-        import faiss
-
-        index = faiss.IndexFlatIP(database_descriptors.shape[1])
-        index.add(database_descriptors)
-        _, predictions = index.search(query_descriptors, maximum)
-    except ImportError:
-        scores = query_descriptors @ database_descriptors.T
-        predictions = np.argpartition(-scores, maximum - 1, axis=1)[:, :maximum]
-        order = np.take_along_axis(scores, predictions, axis=1).argsort(axis=1)[:, ::-1]
-        predictions = np.take_along_axis(predictions, order, axis=1)
+    _, predictions = search_topk_descriptors(database_descriptors, query_descriptors, max(recall_values))
 
     valid = np.asarray([len(items) > 0 for items in positives], dtype=bool)
     success_by_k = {}
@@ -142,38 +168,3 @@ def extract_descriptors(model, rows, transform, device, batch_size=64, workers=4
             descriptors = model.encode(images.to(device, non_blocking=True)).float().cpu().numpy()
             output[indices.numpy()] = descriptors
     return output
-
-
-def evaluate_model(
-    model,
-    robotcar_manifest: str,
-    split: str,
-    transform: VPRTransform,
-    evaluation: EvalConfig,
-    device: torch.device,
-    *,
-    batch_size: int = 64,
-    workers: int = 4,
-    output_path: str | Path | None = None,
-) -> dict:
-    database, queries = benchmark_rows(robotcar_manifest, split)
-    database, database_digest = resolve_database_domain(database, evaluation, split, queries)
-    database_descriptors = extract_descriptors(model, database, transform, device, batch_size, workers)
-    query_descriptors = extract_descriptors(model, queries, transform, device, batch_size, workers)
-    positives = positive_indices(
-        database, queries, evaluation.positive_radius_m, evaluation.positive_yaw_deg
-    )
-    metrics = retrieval_metrics(database_descriptors, query_descriptors, positives, evaluation.recalls)
-    metrics.update(
-        split=split,
-        database=len(database),
-        queries=len(queries),
-        positive_radius_m=evaluation.positive_radius_m,
-        positive_yaw_deg=evaluation.positive_yaw_deg,
-        descriptor_dim=model.descriptor_dim,
-        database_domain=evaluation.database_domain,
-        database_manifest_sha256=database_digest,
-    )
-    if output_path:
-        write_json(metrics, output_path)
-    return metrics

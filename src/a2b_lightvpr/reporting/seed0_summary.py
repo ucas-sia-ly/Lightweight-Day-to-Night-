@@ -4,24 +4,11 @@ import json
 from pathlib import Path
 
 from ..checkpointing import write_json
+from .protocols import (DAY_MACRO, NIGHT_MACRO, REPORT_PROTOCOLS, difference, excluded,
+                        macro, protocol_result, recall, validate_protocol_pair)
 
 
 DESCRIPTOR_DIMS = (128, 512, 4096)
-NIGHT_MACRO = ("robotcar_project", "svox_night", "tokyo_night")
-DAY_MACRO = ("robotcar_day", "svox_day", "svox_sun", "tokyo_day")
-REPORT_PROTOCOLS = (
-    "robotcar_project",
-    "svox_night",
-    "msls_night",
-    "tokyo_night",
-    "tokyo_sunset",
-    "robotcar_day",
-    "svox_day",
-    "svox_sun",
-    "tokyo_day",
-    "msls_day_val",
-    "svox_day_val",
-)
 
 
 def _load_suite(path: str | Path, descriptor_dim: int) -> dict:
@@ -30,21 +17,7 @@ def _load_suite(path: str | Path, descriptor_dim: int) -> dict:
         raise ValueError(
             f"Expected {descriptor_dim}-D suite at {path}, got {payload.get('descriptor_dim')}"
         )
-    missing = sorted(set(REPORT_PROTOCOLS) - set(payload.get("datasets", {})))
-    if missing:
-        raise ValueError(f"Development suite is missing protocols: {missing}")
     return payload
-
-
-def _fingerprint(payload: dict, protocol: str) -> str:
-    metrics = payload["datasets"][protocol]
-    return metrics.get("evaluation_fingerprint", metrics.get("protocol_fingerprint", ""))
-
-
-def _macro(payload: dict, protocols: tuple[str, ...]) -> float:
-    return sum(float(payload["datasets"][name]["recalls"]["1"]) for name in protocols) / len(
-        protocols
-    )
 
 
 def _resources(payload: dict, descriptor_dim: int) -> dict:
@@ -91,6 +64,7 @@ def summarize_cdnd_seed0(
     report = {
         "status": "single_run_development_only",
         "fixed_random_state": 0,
+        "macro_definition": "fixed_supervised_protocols_v2",
         "night_macro_protocols": list(NIGHT_MACRO),
         "day_macro_protocols": list(DAY_MACRO),
         "dimensions": {},
@@ -98,6 +72,8 @@ def summarize_cdnd_seed0(
         "limitations": [
             "One run per method; no cross-run variance estimate is available.",
             "Development protocols are not a sealed external test set.",
+            "RobotCar Seasons public test poses are hidden and excluded from the fixed supervised macros.",
+            "A fixed macro is unavailable if any required supervised protocol was not measured.",
         ],
     }
     loaded = {}
@@ -106,23 +82,21 @@ def summarize_cdnd_seed0(
         candidate = _load_suite(candidate_paths[descriptor_dim], descriptor_dim)
         _validate_pair(baseline, candidate, descriptor_dim)
         for protocol in REPORT_PROTOCOLS:
-            fingerprints = {_fingerprint(baseline, protocol), _fingerprint(candidate, protocol)}
-            if len(fingerprints) != 1 or "" in fingerprints:
-                raise ValueError(
-                    f"Evaluation fingerprint mismatch for {descriptor_dim}-D {protocol}"
-                )
-        baseline_night = _macro(baseline, NIGHT_MACRO)
-        candidate_night = _macro(candidate, NIGHT_MACRO)
-        baseline_day = _macro(baseline, DAY_MACRO)
-        candidate_day = _macro(candidate, DAY_MACRO)
+            validate_protocol_pair(baseline, candidate, protocol)
+        baseline_night = macro(baseline, NIGHT_MACRO)
+        candidate_night = macro(candidate, NIGHT_MACRO)
+        baseline_day = macro(baseline, DAY_MACRO)
+        candidate_day = macro(candidate, DAY_MACRO)
         per_protocol = {}
         for protocol in REPORT_PROTOCOLS:
-            baseline_r1 = float(baseline["datasets"][protocol]["recalls"]["1"])
-            candidate_r1 = float(candidate["datasets"][protocol]["recalls"]["1"])
+            baseline_result = protocol_result(baseline, protocol)
+            candidate_result = protocol_result(candidate, protocol)
             per_protocol[protocol] = {
-                "baseline_recall1": baseline_r1,
-                "cdnd_recall1": candidate_r1,
-                "delta": candidate_r1 - baseline_r1,
+                "baseline_recall1": recall(baseline, protocol),
+                "cdnd_recall1": recall(candidate, protocol),
+                "delta": difference(recall(candidate, protocol), recall(baseline, protocol)),
+                "baseline_status": baseline_result["status"],
+                "cdnd_status": candidate_result["status"],
             }
         report["dimensions"][str(descriptor_dim)] = {
             "baseline": {
@@ -134,10 +108,11 @@ def summarize_cdnd_seed0(
                 "day_macro_recall1": candidate_day,
             },
             "cdnd_delta": {
-                "night_macro_recall1": candidate_night - baseline_night,
-                "day_macro_recall1": candidate_day - baseline_day,
+                "night_macro_recall1": difference(candidate_night, baseline_night),
+                "day_macro_recall1": difference(candidate_day, baseline_day),
             },
             "per_protocol": per_protocol,
+            "excluded": {"baseline": excluded(baseline), "cdnd": excluded(candidate)},
             "resources": _resources(candidate, descriptor_dim),
             "inputs": {
                 "baseline": str(Path(baseline_paths[descriptor_dim]).resolve()),
@@ -151,9 +126,9 @@ def summarize_cdnd_seed0(
         current = loaded[descriptor_dim]["cdnd"]
         report["capacity_delta_from_512"][str(descriptor_dim)] = {
             "night_macro_recall1": (
-                current["night_macro_recall1"] - reference["night_macro_recall1"]
+                difference(current["night_macro_recall1"], reference["night_macro_recall1"])
             ),
-            "day_macro_recall1": current["day_macro_recall1"] - reference["day_macro_recall1"],
+            "day_macro_recall1": difference(current["day_macro_recall1"], reference["day_macro_recall1"]),
         }
     write_json(report, output)
     return Path(output)

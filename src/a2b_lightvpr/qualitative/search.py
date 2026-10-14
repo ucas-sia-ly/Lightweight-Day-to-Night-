@@ -19,7 +19,13 @@ ORDER = ("cosplace", "eigenplaces", "official_mixvpr512", "nocplace",
          "anyloc_pca", "crica_pca", "salad", "boq_pca", "cdnd")
 LABELS = ("CosPlace", "EigenPlaces", "MixVPR", "NocPlace", "AnyLoc-PCA",
           "CricaVPR-PCA", "SALAD", "BoQ-PCA", "CDND (Ours)")
-PROTOCOLS = ("msls_night", "robotcar_project", "svox_night", "tokyo_night")
+PROTOCOLS = ("msls_night", "svox_night", "tokyo_night")
+EXCLUDED_PROTOCOLS = {
+    "robotcar_seasons_night": {
+        "status": "retrieval_only_no_public_test_gt",
+        "reason": "Correctness-based automatic example selection requires public ground truth; export an explicit Query Top-K instead.",
+    },
+}
 
 
 def rank_candidates(correct: dict[str, np.ndarray], valid: np.ndarray) -> list[int]:
@@ -35,7 +41,7 @@ def rank_candidates(correct: dict[str, np.ndarray], valid: np.ndarray) -> list[i
 
 def render_figure(results: dict, output: Path) -> None:
     cell_w, cell_h, header, left, gap = 260, 195, 65, 75, 6
-    canvas = Image.new("RGB", (left + 11 * (cell_w + gap), header + 4 * (cell_h + gap)), "white")
+    canvas = Image.new("RGB", (left + 11 * (cell_w + gap), header + len(PROTOCOLS) * (cell_h + gap)), "white")
     draw = ImageDraw.Draw(canvas)
     font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 40)
     for col, label in enumerate(("Query", *LABELS, "Ground truth")):
@@ -45,7 +51,7 @@ def render_figure(results: dict, output: Path) -> None:
         example = results["examples"][protocol]
         directory = output / protocol
         y = header + row * (cell_h + gap)
-        label = ("MSLS", "RobotCar", "SVOX", "Tokyo")[row]
+        label = {"msls_night": "MSLS", "svox_night": "SVOX", "tokyo_night": "Tokyo"}[protocol]
         strip = Image.new("RGB", (cell_h, left), "white")
         ImageDraw.Draw(strip).text((cell_h / 2, left / 2), label, anchor="mm", fill="black", font=font)
         canvas.paste(strip.rotate(90, expand=True), (0, y))
@@ -137,7 +143,7 @@ def search_qualitative_top1(config, selection_path, output_dir, cache_dir, *, ba
     results = {"schema": "night_qualitative_selection_v1", "model_order": list(ORDER),
                "selection_rule": "CDND correct; minimize other successes; tie prefers BoQ/SALAD successes; then query index",
                "note": "Selected qualitative examples, not an estimate of overall recall. NocPlace uses the user-approved substitute-data reproduction.",
-               "model_identities": identities, "examples": {}}
+               "model_identities": identities, "excluded": EXCLUDED_PROTOCOLS, "examples": {}}
     for name in PROTOCOLS:
         db, queries = rows[name]
         correct = {n: np.asarray(predictions[name][n]["correct"], dtype=bool) for n in ORDER}

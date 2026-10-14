@@ -21,8 +21,8 @@ function cli
 end
 
 command -s "$python_bin" >/dev/null; or die "missing interpreter: $python_bin"
-test -f /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_12288.pth; or die "missing BoQ checkpoint"
-test -f /home/admin123/diffusion_vpr_test/reference_code/Patch-NetVLAD/pretrained_models/pitts_WPCA4096.pth.tar; or die "missing NetVLAD checkpoint"
+test -f /home/admin123/.cache/torch/hub/checkpoints/dinov2_12288.pth; or die "missing BoQ checkpoint"
+test -f /home/admin123/github/Lightweight-Day-to-Night/third_party/weights/pitts_WPCA4096.pth.tar; or die "missing NetVLAD checkpoint"
 "$python_bin" -c 'import shutil, sys, torch; free=shutil.disk_usage(".").free/2**30; print(f"cuda={torch.cuda.is_available()}; free_disk={free:.1f} GiB"); sys.exit(0 if torch.cuda.is_available() and free >= 6 else 1)'; or die "CUDA and at least 6 GiB free disk are required"
 
 cli fit-reference-pca \

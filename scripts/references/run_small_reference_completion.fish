@@ -12,7 +12,7 @@ set vocabulary data/reference_vocab/anyloc_dinov2_s_l11_token_c32_urban_v2.pt
 set anyloc_pca data/reference_pca/anyloc_dinov2_s_block11_train_pca512.pt
 set anyloc_cache data/reference_pca/anyloc_dinov2_s_block11_train_raw_fp16.npy
 set resources runs/reference/resource_benchmark_small.json
-set protocols robotcar_project svox_night msls_night tokyo_night robotcar_day svox_day svox_sun tokyo_day
+set protocols robotcar_seasons_night svox_night msls_night tokyo_night robotcar_seasons_day svox_day svox_sun tokyo_day
 set models salad-small-544 boq-dinov2-s-12288 boq-dinov2-s-pca512 anyloc-dinov2-s-12288 anyloc-dinov2-s-pca512
 
 function die

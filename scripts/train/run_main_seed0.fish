@@ -77,10 +77,10 @@ echo "[1/10] preflight"
     configs/vpr/day_fake_128.yaml configs/vpr/cdnd_salad_128.yaml \
     configs/vpr/day_fake_512.yaml configs/vpr/cdnd_salad_512.yaml \
     configs/vpr/day_fake_4096.yaml configs/vpr/cdnd_salad_4096.yaml; or exit 1
-verify_sha256 '/home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/checkpoints/resnet50_MixVPR_128_channels(64)_rows(2).ckpt' d9dc62449ebfbfca0ac138e3062469458f957c5dd8d61157fe07007d1da54b6f
-verify_sha256 '/home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/checkpoints/resnet50_MixVPR_512_channels(256)_rows(2).ckpt' 7e1180f77d04ece604f2d12f8b6b9b323a99d6e43863c879028bfa17b34807cf
-verify_sha256 '/home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/checkpoints/resnet50_MixVPR_4096_channels(1024)_rows(4).ckpt' 97528606773e9920e93ca4d211daeabf1c7312480f38b45379ee5551a1b4dd24
-verify_sha256 '/home/admin123/diffusion_vpr_test/reference_code/weights/dino_salad_512_32.ckpt' d25c3434032a3ce5680ffcf51e05de0a7b9962772bd9112d88ca074689f18dcc
+verify_sha256 '/home/admin123/github/Lightweight-Day-to-Night/third_party/weights/resnet50_MixVPR_128_channels(64)_rows(2).ckpt' d9dc62449ebfbfca0ac138e3062469458f957c5dd8d61157fe07007d1da54b6f
+verify_sha256 '/home/admin123/github/Lightweight-Day-to-Night/third_party/weights/resnet50_MixVPR_512_channels(256)_rows(2).ckpt' 7e1180f77d04ece604f2d12f8b6b9b323a99d6e43863c879028bfa17b34807cf
+verify_sha256 '/home/admin123/github/Lightweight-Day-to-Night/third_party/weights/resnet50_MixVPR_4096_channels(1024)_rows(4).ckpt' 97528606773e9920e93ca4d211daeabf1c7312480f38b45379ee5551a1b4dd24
+verify_sha256 '/home/admin123/.cache/torch/hub/checkpoints/dino_salad_512_32.ckpt' d25c3434032a3ce5680ffcf51e05de0a7b9962772bd9112d88ca074689f18dcc
 cli audit-data --config "$generator_config"; or exit 1
 
 echo "[2/10] tests"

@@ -40,7 +40,7 @@ def prepare(root, output):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root', default='/home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/gsv-cities')
+    parser.add_argument('--root', default='/home/admin123/github/WORKSPACE/dataset/gsv-cities')
     parser.add_argument('--output', default='data/manifests_gsv_cdnd/vpr_train.csv')
     args = parser.parse_args()
     prepare(args.root, args.output)

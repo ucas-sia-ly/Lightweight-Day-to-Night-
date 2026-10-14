@@ -12,6 +12,7 @@ from PIL import Image, ImageDraw, ImageFont
 from ..checkpointing import file_sha256, write_json
 from ..config import ExperimentConfig
 from ..evaluation import extract_descriptors, positive_indices
+from ..paths import PROJECT_ROOT, TORCH_HUB_ROOT, resolve_resource_path
 from ..references.models import (
     FixedResizeTransform,
     ReferenceAdapter,
@@ -30,12 +31,13 @@ class QualitativeDataset:
     protocol: str
     dataset: str
     split: str
-    radius_m: float
+    radius_m: float | None
     yaw_deg: float | None
 
 
 DATASETS = {
-    "robotcar_project": QualitativeDataset("robotcar_project", "robotcar", "test", 10.0, 30.0),
+    "robotcar_seasons_night": QualitativeDataset("robotcar_seasons_night", "robotcar_seasons_night", "test", None, None),
+    "robotcar_seasons_day": QualitativeDataset("robotcar_seasons_day", "robotcar_seasons_day", "test", None, None),
     "svox_night": QualitativeDataset("svox_night", "svox_night", "test", 25.0, None),
     "msls_night": QualitativeDataset("msls_night", "msls_night", "val", 25.0, None),
     "tokyo_night": QualitativeDataset("tokyo_night", "tokyo_night", "test", 25.0, None),
@@ -57,7 +59,11 @@ MODEL_LABELS = {
 
 
 def _local_gem_model(checkpoint: Path) -> ReferenceAdapter:
-    repo = Path("/home/admin123/diffusion_vpr_test/reference_code/CosPlace")
+    repo = TORCH_HUB_ROOT / "gmberton_cosplace_main"
+    if not (repo / "cosplace_model/cosplace_network.py").is_file():
+        repo = PROJECT_ROOT / "third_party/CosPlace"
+    if not (repo / "cosplace_model/cosplace_network.py").is_file():
+        raise FileNotFoundError(f"Local CosPlace source is unavailable: expected {repo / 'cosplace_model/cosplace_network.py'}")
     with _isolated_repo_import(repo, ("cosplace_model",)):
         import torchvision
         from cosplace_model.cosplace_network import GeoLocalizationNet
@@ -69,6 +75,20 @@ def _local_gem_model(checkpoint: Path) -> ReferenceAdapter:
         model = GeoLocalizationNet("ResNet50", 512, train_all_layers=True)
         _strict_state(model, checkpoint)
     return ReferenceAdapter(model, 512)
+
+
+def _official_mixvpr_checkpoint(config: ExperimentConfig) -> Path:
+    filename = "resnet50_MixVPR_512_channels(256)_rows(2).ckpt"
+    checkpoint = PROJECT_ROOT / "third_party/weights" / filename
+    cfg = config.vpr
+    if cfg.model_family == "mixvpr" and cfg.descriptor_dim == 512 and cfg.init_checkpoint:
+        configured = resolve_resource_path(cfg.init_checkpoint)
+        if configured.name != filename:
+            raise ValueError(f"Official MixVPR-512 requires the initialization checkpoint {filename}")
+        checkpoint = configured
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"Official MixVPR-512 initialization checkpoint is unavailable: expected {checkpoint}")
+    return checkpoint
 
 
 def _models(config: ExperimentConfig, selected_models: tuple[str, ...]):
@@ -100,7 +120,7 @@ def _models(config: ExperimentConfig, selected_models: tuple[str, ...]):
             model = _local_gem_model(checkpoint)
             transform = VPRTransform(320, 320)
         elif name == "official_mixvpr512":
-            checkpoint = Path("/home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/checkpoints/resnet50_MixVPR_512_channels(256)_rows(2).ckpt")
+            checkpoint = _official_mixvpr_checkpoint(config)
             model = build_descriptor_model(
                 "mixvpr", image_height=320, image_width=320, descriptor_dim=512,
                 pretrained=False, init_checkpoint=str(checkpoint), model_family="mixvpr",
@@ -157,6 +177,8 @@ def _top_indices(database: np.ndarray, query: np.ndarray, count: int = 10) -> tu
 
 
 def _positives(database, query, spec: QualitativeDataset) -> np.ndarray:
+    if getattr(query, "ground_truth_available", True) is False:
+        raise ValueError(f"{spec.protocol}: official test ground truth is unavailable; correctness cannot be assigned")
     if spec.yaw_deg is None:
         xy = np.asarray([(row.easting, row.northing) for row in database])
         return np.flatnonzero(
@@ -254,37 +276,41 @@ def export_qualitative_top1(
         if not 0 <= query_index < len(queries):
             raise IndexError(f"Query index outside {name}: {query_index}")
         query = queries[query_index]
-        positives = _positives(database, query, spec)
-        if not len(positives):
-            raise RuntimeError(f"Selected query has no positive: {name}/{query_index}")
-        preferred_path = item.get("positive_reference_path")
-        if preferred_path:
-            matching = [
-                int(index) for index in positives
-                if Path(database[int(index)].source_path).resolve() == Path(preferred_path).resolve()
-            ]
-            if not matching:
-                raise ValueError(
-                    f"Preferred positive is outside the frozen protocol: {name}/{preferred_path}"
-                )
-            closest = matching[0]
-        else:
-            closest = min(positives, key=lambda index: (
-                database[int(index)].easting - query.easting
-            ) ** 2 + (database[int(index)].northing - query.northing) ** 2)
+        labelled = getattr(query, "ground_truth_available", True) is not False
+        positives = _positives(database, query, spec) if labelled else None
         directory = output_root / name
         query_file = directory / _copy_image(query.source_path, directory / "query")
-        positive_file = directory / _copy_image(
-            database[int(closest)].source_path, directory / "ground_truth_positive"
-        )
-        rows_by_dataset[name] = (spec, database, query, positives, query_file, positive_file)
-        results["examples"][name] = {
-            "query_index": query_index,
-            "query_path": query.source_path,
-            "ground_truth_positive_index": int(closest),
-            "ground_truth_positive_path": database[int(closest)].source_path,
+        positive_file = None
+        example = {
+            "query_index": query_index, "query_path": query.source_path,
+            "ground_truth_available": labelled,
+            "evaluation_status": "completed" if labelled else "retrieval_only_no_public_test_gt",
             "models": {},
         }
+        preferred_path = item.get("positive_reference_path")
+        if not labelled:
+            if preferred_path:
+                raise ValueError(f"{name}: a ground-truth positive cannot be selected for the unlabelled official test")
+        else:
+            if not len(positives):
+                raise RuntimeError(f"Selected query has no positive: {name}/{query_index}")
+            if preferred_path:
+                preferred = resolve_resource_path(preferred_path).resolve()
+                matching = [int(index) for index in positives
+                    if resolve_resource_path(database[int(index)].source_path).resolve() == preferred]
+                if not matching:
+                    raise ValueError(f"Preferred positive is outside the frozen protocol: {name}/{preferred_path}")
+                closest = matching[0]
+            else:
+                closest = min(positives, key=lambda index: (
+                    database[int(index)].easting - query.easting
+                ) ** 2 + (database[int(index)].northing - query.northing) ** 2)
+            positive_file = directory / _copy_image(
+                database[int(closest)].source_path, directory / "ground_truth_positive")
+            example.update(ground_truth_positive_index=int(closest),
+                           ground_truth_positive_path=database[int(closest)].source_path)
+        rows_by_dataset[name] = (spec, database, query, positives, query_file, positive_file)
+        results["examples"][name] = example
 
     for model_name, model, transform, checkpoint in _models(config, models):
         model.eval().to(device)
@@ -314,8 +340,11 @@ def export_qualitative_top1(
                 model, [query], transform, device, 1, workers
             )[0]
             indices, scores = _top_indices(database_descriptors, query_descriptor, 10)
-            success = [int(np.isin(indices[:value], positives).any()) for value in (1, 5, 10)]
+            success = ([int(np.isin(indices[:value], positives).any()) for value in (1, 5, 10)]
+                       if positives is not None else None)
             expected = selected[name].get(model_name)
+            if expected is not None and positives is None:
+                raise ValueError(f"{name}: expected success labels cannot be supplied for the unlabelled official test")
             if expected is not None and success != list(expected):
                 raise RuntimeError(
                     f"{model_name}/{name} reproduced {success}, expected {expected}; "
@@ -323,12 +352,11 @@ def export_qualitative_top1(
                 )
             top1 = int(indices[0])
             top1_row = database[top1]
-            distance_m = float(np.hypot(
-                top1_row.easting - query.easting,
-                top1_row.northing - query.northing,
-            ))
+            distance_m = (float(np.hypot(
+                top1_row.easting - query.easting, top1_row.northing - query.northing,
+            )) if positives is not None else None)
             yaw_error_deg = None
-            if spec.yaw_deg is not None:
+            if positives is not None and spec.yaw_deg is not None:
                 yaw_error_deg = float(
                     abs((top1_row.yaw_deg - query.yaw_deg + 180.0) % 360.0 - 180.0)
                 )
@@ -343,6 +371,11 @@ def export_qualitative_top1(
                 "top1_distance_m": distance_m,
                 "top1_yaw_error_deg": yaw_error_deg,
                 "success_at_1_5_10": success,
+                "ground_truth_available": positives is not None,
+                "top_k": [{"rank": rank, "database_index": int(index),
+                           "database_path": database[int(index)].source_path,
+                           "score": float(score)}
+                          for rank, (index, score) in enumerate(zip(indices, scores), 1)],
                 "output_file": output_name,
             }
         model.cpu()
@@ -352,24 +385,22 @@ def export_qualitative_top1(
 
     for name, example in results["examples"].items():
         directory = output_root / name
-        entries = [("Night query", next(directory.glob("query.*")), None)]
+        entries = [("Query", next(directory.glob("query.*")), None)]
         for model_name in models:
             model_result = example["models"][model_name]
-            correct = bool(model_result["success_at_1_5_10"][0])
-            geometry = f"{model_result['top1_distance_m']:.1f} m"
-            if model_result["top1_yaw_error_deg"] is not None:
-                geometry += f", {model_result['top1_yaw_error_deg']:.1f} deg"
-            entries.append((
-                f"{MODEL_LABELS[model_name]}\n"
-                f"{'CORRECT' if correct else 'INCORRECT'}; {geometry}",
-                directory / model_result["output_file"],
-                correct,
-            ))
-        entries.append((
-            "Valid positive",
-            next(directory.glob("ground_truth_positive.*")),
-            True,
-        ))
+            success = model_result["success_at_1_5_10"]
+            correct = bool(success[0]) if success is not None else None
+            if correct is None:
+                detail = "Unlabelled official test"
+            else:
+                geometry = f"{model_result['top1_distance_m']:.1f} m"
+                if model_result["top1_yaw_error_deg"] is not None:
+                    geometry += f", {model_result['top1_yaw_error_deg']:.1f} deg"
+                detail = f"{'CORRECT' if correct else 'INCORRECT'}; {geometry}"
+            entries.append((f"{MODEL_LABELS[model_name]}\n{detail}",
+                            directory / model_result["output_file"], correct))
+        if example["ground_truth_available"]:
+            entries.append(("Valid positive", next(directory.glob("ground_truth_positive.*")), True))
         _contact_sheet(directory, entries)
     _combined_contact_sheet(output_root, list(results["examples"]))
     output = output_root / "top1_results.json"

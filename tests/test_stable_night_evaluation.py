@@ -5,13 +5,12 @@ import pytest
 from PIL import Image
 
 from a2b_lightvpr.config import EvalConfig
-from a2b_lightvpr.data import RobotCarRow
+from a2b_lightvpr.references.models import SuiteRow
 from a2b_lightvpr.evaluation import positive_indices, resolve_database_domain
 
 
 def row(path, role="database"):
-    return RobotCarRow("test", role, "day" if role == "database" else "night",
-                       "route", "1", 0., 0., 0., str(path), "")
+    return SuiteRow(str(path), 0., 0., 0.)
 
 
 def write_manifest(path, rows):
@@ -26,7 +25,7 @@ def test_fake_database_preserves_order_pose_and_positives_and_query(tmp_path):
     fake_paths = [tmp_path / f"fake{i}.png" for i in range(2)]
     for image in day_paths + fake_paths:
         Image.new("RGB", (16, 16)).save(image)
-    database = [row(day_paths[0]), replace(row(day_paths[1]), easting=100., timestamp="2")]
+    database = [row(day_paths[0]), replace(row(day_paths[1]), easting=100.)]
     query = row(tmp_path / "real_night.png", "query")
     manifest = tmp_path / "fake.csv"
     # A reordered CSV does not reorder the retrieval database.
@@ -36,7 +35,7 @@ def test_fake_database_preserves_order_pose_and_positives_and_query(tmp_path):
     mapped, digest = resolve_database_domain(database, cfg, "test")
     assert len(digest) == 64
     assert [r.source_path for r in mapped] == list(map(str, fake_paths))
-    assert [(r.easting, r.timestamp) for r in mapped] == [(r.easting, r.timestamp) for r in database]
+    assert [(r.easting, r.northing) for r in mapped] == [(r.easting, r.northing) for r in database]
     before = positive_indices(database, [query], 10., 30.)
     after = positive_indices(mapped, [query], 10., 30.)
     assert before[0].tolist() == after[0].tolist() == [0]

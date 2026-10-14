@@ -11,11 +11,11 @@ command -s "$python_bin" >/dev/null; or begin
     echo "ERROR: missing interpreter: $python_bin" >&2
     exit 1
 end
-test -f /home/admin123/diffusion_vpr_test/reference_code/salad/dinov2_vits14_pretrain.pth; or begin
+test -f /home/admin123/.cache/torch/hub/checkpoints/dinov2_vits14_pretrain.pth; or begin
     echo "ERROR: missing official DINOv2-S checkpoint" >&2
     exit 1
 end
-test -d /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/gsv-cities/Images; or begin
+test -d /home/admin123/github/WORKSPACE/dataset/gsv-cities/Images; or begin
     echo "ERROR: missing GSV-Cities Images directory" >&2
     exit 1
 end

@@ -55,5 +55,5 @@ if test -f "$latest"
 end
 cli train-vpr --config "$config" $resume_args; or exit 1
 cli evaluate-trained-suite --config "$config" --checkpoint runs/vpr/cdnd_multigenerator_512/seed0/model_best.pt \
-    --datasets robotcar_project robotcar_day svox_night svox_day svox_sun tokyo_night tokyo_day msls_night msls_day_val; or exit 1
+    --datasets robotcar_seasons_night robotcar_seasons_day svox_night svox_day svox_sun tokyo_night tokyo_day msls_night msls_day_val; or exit 1
 echo Complete

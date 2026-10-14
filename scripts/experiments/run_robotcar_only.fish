@@ -51,11 +51,11 @@ end
 if contains -- $stage all evaluate
     for group in day_only day_fake cdnd
         run_logged "eval_$group" -m a2b_lightvpr.cli evaluate-trained-suite --config "configs/experiments/single_dataset/robotcar_only_$group.yaml" \
-            --checkpoint "runs/vpr/robotcar_only_512/"$group"_seed0/model_best.pt" --datasets robotcar_project robotcar_day
+            --checkpoint "runs/vpr/robotcar_only_512/"$group"_seed0/model_best.pt" --datasets robotcar_seasons_night robotcar_seasons_day
     end
     run_logged official -m a2b_lightvpr.cli evaluate-reference-suite --config configs/references/robotcar_only_official.yaml \
         --model mixvpr-robotcar-official --database-encoder adapted --transform unified \
-        --output-dir runs/vpr/robotcar_only_512/official --datasets robotcar_project robotcar_day
+        --output-dir runs/vpr/robotcar_only_512/official --datasets robotcar_seasons_night robotcar_seasons_day
 end
 if contains -- $stage all summarize
     run_logged summarize scripts/data/prepare_robotcar.py summarize

@@ -1,10 +1,9 @@
 data:
-  robotcar_manifest: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/manifest.csv
-  robotcar_protocol: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/protocol.json
+  robotcar_seasons_root: /home/admin123/github/datasets/RobotCar-Seasons
   generated_root: data/generated/multidataset_qsattn_official_150k
-  tokyo_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/tokyo247
-  svox_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/svox
-  msls_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/MSLS
+  tokyo_root: /home/admin123/github/datasets/tokyo247
+  svox_root: /home/admin123/github/datasets/svox
+  msls_root: /home/admin123/github/datasets/MSLS
 vpr:
   descriptor_dim: 512
   image_height: 320
@@ -16,7 +15,8 @@ vpr:
   - robotcar
   - svox
 evaluation:
-  protocol: project
+  datasets: [msls_day_val]
+  protocol: standard
   database_domain: day
   recalls:
   - 1
@@ -31,9 +31,9 @@ reference_models:
     - 320
     - 320
     native_batch_size: 32
-    checkpoint: /home/admin123/diffusion_vpr_test/reference_code/CosPlace/resnet50_512.pth
+    checkpoint: /home/admin123/github/Lightweight-Day-to-Night/third_party/weights/resnet50_512.pth
     required_files:
-    - /home/admin123/diffusion_vpr_test/reference_code/CosPlace/resnet50_512.pth
+    - /home/admin123/github/Lightweight-Day-to-Night/third_party/weights/resnet50_512.pth
     official_checkpoint: true
     training_status: official
   eigenplaces-r50-512-320:
@@ -44,9 +44,9 @@ reference_models:
     - 320
     - 320
     native_batch_size: 32
-    checkpoint: /home/admin123/diffusion_vpr_test/reference_code/EigenPlaces/ResNet50_512_eigenplaces.pth
+    checkpoint: /home/admin123/.cache/torch/hub/checkpoints/ResNet50_512_eigenplaces.pth
     required_files:
-    - /home/admin123/diffusion_vpr_test/reference_code/EigenPlaces/ResNet50_512_eigenplaces.pth
+    - /home/admin123/.cache/torch/hub/checkpoints/ResNet50_512_eigenplaces.pth
     official_checkpoint: true
     training_status: official
   anyloc-dinov2-s-gsv-pca512:
@@ -58,14 +58,14 @@ reference_models:
     - 322
     - 322
     native_batch_size: 16
-    repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
-    checkpoint: /home/admin123/diffusion_vpr_test/reference_code/salad/dinov2_vits14_pretrain.pth
+    repo: /home/admin123/.cache/torch/hub/facebookresearch_dinov2_main
+    checkpoint: /home/admin123/.cache/torch/hub/checkpoints/dinov2_vits14_pretrain.pth
     vocabulary: data/reference_vocab/anyloc_dinov2_s_plain_gsv224_c32.pt
     required_files:
     - data/reference_vocab/anyloc_dinov2_s_plain_gsv224_c32.pt
     - data/reference_vocab/anyloc_dinov2_s_plain_gsv224_c32.json
     fit_source: gsv_cities
-    fit_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/gsv-cities
+    fit_root: /home/admin123/github/WORKSPACE/dataset/gsv-cities
     layer: 11
     facet: token
     num_clusters: 32
@@ -86,14 +86,14 @@ reference_models:
     - 322
     native_batch_size: 1
     batch_dependent: true
-    repo: /home/admin123/diffusion_vpr_test/reference_code/CricaVPR
+    repo: /home/admin123/github/Lightweight-Day-to-Night/third_party/CricaVPR
     checkpoint: runs/reference/cricavpr-dinov2-s-gsv322-5376/model.pt
     projection_checkpoint: data/reference_pca/cricavpr_dinov2_s_gsv322_pca512.pt
     required_files:
     - runs/reference/cricavpr-dinov2-s-gsv322-5376/training_metadata.json
     - data/reference_pca/cricavpr_dinov2_s_gsv322_pca512.pt
     fit_source: gsv_cities
-    fit_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/gsv-cities
+    fit_root: /home/admin123/github/WORKSPACE/dataset/gsv-cities
     official_checkpoint: false
     training_status: re-trained-gsv322-descriptor-compressed
   salad-dinov2-s-544-gsv:
@@ -106,11 +106,11 @@ reference_models:
     - 224
     native_batch_size: 32
     trainable_blocks: 4
-    repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
-    backbone_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/salad/dinov2_vits14_pretrain.pth
+    repo: /home/admin123/.cache/torch/hub/facebookresearch_dinov2_main
+    backbone_checkpoint: /home/admin123/.cache/torch/hub/checkpoints/dinov2_vits14_pretrain.pth
     checkpoint: runs/reference/salad-dinov2-s-544-gsv/last.ckpt
     required_files:
-    - /home/admin123/diffusion_vpr_test/reference_code/salad/dinov2_vits14_pretrain.pth
+    - /home/admin123/.cache/torch/hub/checkpoints/dinov2_vits14_pretrain.pth
     - runs/reference/salad-dinov2-s-544-gsv/last.ckpt
     official_checkpoint: false
     training_status: re-trained-official-salad-small
@@ -128,13 +128,13 @@ reference_models:
     - 322
     native_batch_size: 8
     trainable_blocks: 2
-    repo: /home/admin123/diffusion_vpr_test/reference_code/dinov2
-    aggregator_repo: /home/admin123/diffusion_vpr_test/reference_code/Bag-of-Queries
-    backbone_checkpoint: /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth
+    repo: /home/admin123/.cache/torch/hub/facebookresearch_dinov2_main
+    aggregator_repo: /home/admin123/github/Lightweight-Day-to-Night/third_party/Bag-of-Queries
+    backbone_checkpoint: /home/admin123/.cache/torch/hub/checkpoints/dinov2_vits14_reg4_pretrain.pth
     checkpoint: runs/reference/boq-dinov2-s-12288/model_best.pt
     projection_checkpoint: data/reference_pca/boq_dinov2_s_train_pca512.pt
     required_files:
-    - /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth
+    - /home/admin123/.cache/torch/hub/checkpoints/dinov2_vits14_reg4_pretrain.pth
     - runs/reference/boq-dinov2-s-12288/model_best.pt
     - data/reference_pca/boq_dinov2_s_train_pca512.pt
     official_checkpoint: false

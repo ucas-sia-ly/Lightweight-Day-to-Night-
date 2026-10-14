@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from ..checkpointing import write_json
-from .seed0_summary import NIGHT_MACRO
+from .protocols import NIGHT_MACRO, PUBLIC_UNLABELLED, excluded, macro
 
 
 REFERENCE_MODELS = (
@@ -18,15 +18,16 @@ SMALL_REFERENCE_MODELS = (
 )
 
 
-def _night_macro(payload: dict) -> float:
-    return sum(
-        float(payload["datasets"][name]["recalls"]["1"]) for name in NIGHT_MACRO
-    ) / len(NIGHT_MACRO)
+def _night_macro(payload: dict) -> float | None:
+    return macro(payload, NIGHT_MACRO)
 
 
-def _student_result(payload: dict) -> tuple[float, dict, str]:
+def _student_result(payload: dict) -> tuple[float | None, dict, str]:
     if payload.get("schema") == "cdnd_paper_experiments_v1":
-        accuracy = float(payload["main"]["cdnd"]["night_macro_recall1"]["mean"])
+        if tuple(payload.get("night_macro_protocols", ())) != NIGHT_MACRO:
+            raise ValueError("Summary uses a different or unspecified fixed night macro; regenerate it for the current protocols")
+        mean = payload["main"]["cdnd"]["night_macro_recall1"]["mean"]
+        accuracy = float(mean) if mean is not None else None
         seed_zero_path = payload["inputs"]["cdnd"].get("0")
         if not seed_zero_path:
             raise ValueError("Multi-seed summary does not identify the seed-0 CDND suite")
@@ -67,19 +68,28 @@ def plot_accuracy_efficiency(
         payload = json.loads(Path(resource_summary).read_text(encoding="utf-8"))
         resources.update(payload["models"])
         gpu = gpu or payload.get("gpu")
-    points = [_point("CDND-512", "ours", student_accuracy, {
-        "descriptor_dim": student["descriptor_dim"],
-        "parameters": student["benchmark"]["parameters"],
-    })]
+    points, exclusions = [], {}
+    if student_accuracy is None:
+        exclusions["CDND-512"] = {"reason": "Fixed supervised night macro was not measured.",
+                                  "protocols": excluded(student)}
+    else:
+        points.append(_point("CDND-512", "ours", student_accuracy, {
+            "descriptor_dim": student["descriptor_dim"],
+            "parameters": student["benchmark"]["parameters"],
+        }))
     reference_root = Path(reference_root)
     for label, resource_key, relative_summary, family in REFERENCE_MODELS:
         summary_path = reference_root / resource_key / relative_summary
         if not summary_path.is_file() or resource_key not in resources:
+            exclusions[label] = {"reason": "Accuracy suite or resource measurements are missing."}
             continue
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        points.append(
-            _point(label, family, _night_macro(summary), resources[resource_key])
-        )
+        accuracy = _night_macro(summary)
+        if accuracy is None:
+            exclusions[label] = {"reason": "Fixed supervised night macro was not measured.",
+                                 "protocols": excluded(summary)}
+            continue
+        points.append(_point(label, family, accuracy, resources[resource_key]))
 
     if compact_summary:
         compact = json.loads(Path(compact_summary).read_text(encoding="utf-8"))
@@ -87,6 +97,13 @@ def plot_accuracy_efficiency(
         for label, model_key in SMALL_REFERENCE_MODELS:
             model = compact_models.get(model_key)
             if model is None or model.get("resources") is None:
+                exclusions[label] = {"reason": "Accuracy suite or resource measurements are missing."}
+                continue
+            if tuple(compact.get("night_macro_protocols", ())) != NIGHT_MACRO:
+                raise ValueError("Compact summary uses a different or unspecified fixed night macro")
+            if model.get("night_macro_recall1") is None:
+                exclusions[label] = {"reason": "Fixed supervised night macro was not measured.",
+                                     "protocols": model.get("excluded", {})}
                 continue
             points.append(
                 _point(label, "small", float(model["night_macro_recall1"]), model["resources"])
@@ -139,7 +156,7 @@ def plot_accuracy_efficiency(
         axis.set_ylim(45, 98)
         axis.grid(True, linestyle=":", linewidth=0.75, alpha=0.65)
         axis.set_axisbelow(True)
-    axes[0].set_ylabel("Three-protocol mean Recall@1 (%)")
+    axes[0].set_ylabel("SVOX/Tokyo mean Recall@1 (%)")
     axes[0].set_title("(a) Model capacity")
     axes[1].set_title("(b) Descriptor storage")
     axes[1].legend(
@@ -157,7 +174,10 @@ def plot_accuracy_efficiency(
     write_json(
         {
             "schema": "paper_accuracy_efficiency_v1",
+            "macro_definition": "fixed_supervised_protocols_v2",
             "night_macro_protocols": list(NIGHT_MACRO),
+            "unlabelled_protocols": list(PUBLIC_UNLABELLED),
+            "excluded": exclusions,
             "gpu": gpu,
             "student_statistic": student_statistic,
             "points": points,

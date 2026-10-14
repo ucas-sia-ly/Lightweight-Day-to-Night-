@@ -5,6 +5,7 @@ import json
 import random
 import resource
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 import numpy as np
@@ -31,8 +32,8 @@ from ..data import (
     RollingBalancedSampler,
     StableNightVPRDataset,
 )
-from ..evaluation import evaluate_model
 from ..transforms import VPRTransform
+from ..training_logging import create_summary_writer, log_patch_diagnostics, log_scalars
 from .losses import (
     MarginCosineClassifier,
     cross_domain_neighborhood_loss,
@@ -207,17 +208,40 @@ def _vpr_checkpoint(
 
 
 def _evaluate_validation(model, config, transform, device, output_path):
-    return evaluate_model(
-        model,
-        config.data.robotcar_manifest,
-        "val",
-        transform,
-        config.evaluation,
-        device,
-        batch_size=max(1, config.vpr.batch_size * 2),
-        workers=config.vpr.workers,
-        output_path=output_path,
-    )
+    from ..references.models import evaluate_dual_encoder, suite_rows
+
+    results = {}
+    for dataset in config.evaluation.datasets:
+        if dataset not in {"msls_day_val", "svox_day_val"}:
+            raise ValueError("Checkpoint validation requires public day validation datasets")
+        database, queries = suite_rows(config, dataset, "val")
+        if not database or not queries:
+            raise ValueError(f"Incomplete public validation split: {dataset}")
+        metrics = evaluate_dual_encoder(
+            model, model, database, queries, transform, 25.0, None,
+            config.evaluation.recalls, device,
+            batch_size=max(1, config.vpr.batch_size * 2), workers=config.vpr.workers,
+        )
+        if metrics["valid_queries"] == 0:
+            raise ValueError(f"No ground-truth positives in public validation split: {dataset}")
+        metrics.update(database=len(database), queries=len(queries),
+                       positive_radius_m=25.0, positive_yaw_deg=None, split="val")
+        results[dataset] = metrics
+    # Give each configured validation benchmark the same checkpoint-selection
+    # weight, so a larger set does not silently dominate a smaller one.
+    summary = {
+        "recalls": {str(k): float(np.mean([m["recalls"][str(k)] for m in results.values()]))
+                    for k in config.evaluation.recalls},
+        "mrr": float(np.mean([m["mrr"] for m in results.values()])),
+        "valid_queries": sum(m["valid_queries"] for m in results.values()),
+        "total_queries": sum(m["total_queries"] for m in results.values()),
+        "datasets": results,
+        "split": "val", "database_domain": "day", "positive_radius_m": 25.0,
+        "positive_yaw_deg": None,
+    }
+    if output_path:
+        write_json(summary, output_path)
+    return summary
 
 
 def export_vpr_inference_checkpoint(
@@ -252,6 +276,11 @@ def export_vpr_inference_checkpoint(
 
 
 def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> Path:
+    with ExitStack() as logging_stack:
+        return _train_vpr(config, smoke_epochs=smoke_epochs, logging_stack=logging_stack)
+
+
+def _train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None, logging_stack: ExitStack) -> Path:
     cfg = config.vpr
     stable_night = cfg.model_family == "stable_night_salad"
     _set_random_state(cfg.random_seed)
@@ -388,6 +417,8 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         state = torch.load(cfg.resume, map_location="cpu", weights_only=False)
         if not checkpoint_config_matches(state, config, ("data", "vpr", "evaluation")):
             raise ValueError("VPR resume config does not match the current config")
+        if state.get("data_fingerprints") != data_fingerprints(config, generated=generated_manifest):
+            raise ValueError("VPR resume training or public validation resources do not match the checkpoint")
         model.load_state_dict(state["model"])
         classifier.load_state_dict(state["classifier"])
         optimizer.load_state_dict(state["optimizer"])
@@ -417,6 +448,9 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
     epochs = int(smoke_epochs or cfg.epochs)
     best_path = output_dir / "model_best.pt"
     global_step = saved_optimizer_step
+    writer = logging_stack.enter_context(create_summary_writer(
+        cfg, output_dir, purge_step=saved_optimizer_step + 1 if cfg.resume else None,
+    ))
     print(
         "VPR training budget: "
         f"rows={len(dataset):,}, samples/epoch={cfg.samples_per_epoch:,}, "
@@ -433,6 +467,7 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         )
         epoch_zero_score = float(metrics["recalls"]["1"])
         best_score = epoch_zero_score
+        _log_validation(writer, metrics, global_step, best_score)
         atomic_torch_save(
             _inference_checkpoint(
                 config, 0, best_score, epoch_zero_score, model, generated_manifest,
@@ -462,11 +497,22 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         data_wait_start = epoch_start
         optimizer.zero_grad(set_to_none=True)
         component_totals: dict[str, float] = {}
+        group_totals: dict[str, float] = {}
+        group_batches = 0
+        epoch_skipped_updates = 0
         progress = tqdm(loader, desc=f"vpr/{cfg.model_family}/{cfg.aggregator} epoch {epoch + 1}")
         for batch_index, batch in enumerate(progress):
             batch_ready = time.perf_counter()
             data_time += batch_ready - data_wait_start
             step_start = batch_ready
+            next_step = global_step + 1
+            capture_patches = (
+                writer is not None and stable_night and cfg.tensorboard_image_interval > 0
+                and (next_step == saved_optimizer_step + 1
+                     or next_step % cfg.tensorboard_image_interval == 0
+                     or batch_index + 1 == len(loader))
+            )
+            diagnostics = {} if capture_patches else None
             day = batch["day"].to(device, non_blocking=True)
             fake = (
                 batch["fake"].to(device, non_blocking=True)
@@ -490,7 +536,8 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
                         view_images["fake"] = fake
                         view_masks["fake"] = batch["fake_valid_mask"].to(device, non_blocking=True)
                     loss, components, reference_images = stable_night_batch_loss(
-                        model, view_images, view_masks, labels, image_keys, cfg, reference_backbone
+                        model, view_images, view_masks, labels, image_keys, cfg, reference_backbone,
+                        diagnostics=diagnostics,
                     )
                     teacher_images += reference_images
                 else:
@@ -563,6 +610,8 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer_stepped = scaler.get_scale() >= scale_before_update
+                if not optimizer_stepped:
+                    epoch_skipped_updates += 1
                 if optimizer_stepped:
                     global_step += 1
                     epoch_optimizer_steps += 1
@@ -576,14 +625,36 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             encoded_student_images += batch_samples * (
                 len(view_images) if stable_night else (2 if fake is not None else 1)
             )
-            if stable_night:
-                for name, value in components.items():
-                    component_totals[name] = component_totals.get(name, 0.0) + float(value.detach().item())
-            running += float(loss.item())
+            loss_value = float(loss.item())
+            if stable_night or writer is not None:
+                component_values = {name: float(value.detach().item()) for name, value in components.items()}
+                for name, value in component_values.items():
+                    component_totals[name] = component_totals.get(name, 0.0) + value
+            if writer is not None:
+                group_batches += 1
+                batch_values = {**component_values, "loss": loss_value}
+                for name, value in batch_values.items():
+                    group_totals[name] = group_totals.get(name, 0.0) + value
+                if update_due:
+                    log_due = optimizer_stepped and (
+                        global_step == saved_optimizer_step + 1
+                        or global_step % cfg.tensorboard_log_interval == 0
+                        or batch_index + 1 == len(loader)
+                    )
+                    if log_due:
+                        log_scalars(writer, {name: value / group_batches for name, value in group_totals.items()}, global_step, "train")
+                        log_scalars(writer, _optimizer_lrs(optimizer), global_step, "lr")
+                        log_scalars(writer, {"samples_seen": samples_seen}, global_step, "progress")
+                        log_scalars(writer, {"scale": scaler.get_scale()}, global_step, "amp")
+                    if optimizer_stepped and diagnostics is not None:
+                        log_patch_diagnostics(writer, diagnostics, global_step)
+                    group_totals.clear()
+                    group_batches = 0
+            running += loss_value
             step_time += time.perf_counter() - step_start
             elapsed = max(time.perf_counter() - epoch_start, 1e-9)
             progress.set_postfix(
-                loss=f"{loss.item():.3f}",
+                loss=f"{loss_value:.3f}",
                 samples=f"{epoch_samples}/{cfg.samples_per_epoch}",
             )
             data_wait_start = time.perf_counter()
@@ -607,6 +678,8 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
         significant_improvement = score > previous_best + cfg.scheduler_threshold
         if improved:
             best_score = score
+        if cfg.selection_rule != "fixed_budget_last":
+            _log_validation(writer, metrics, global_step, best_score)
         stale_epochs = 0 if significant_improvement else stale_epochs + 1
         at_min_lr = learning_rates_at_minimum(optimizer, cfg)
         epoch_elapsed = max(time.perf_counter() - epoch_start, 1e-9)
@@ -639,6 +712,21 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
             )
 
         completed_epochs = epoch + 1
+        if writer is not None:
+            epoch_losses = {name: total / max(1, len(loader)) for name, total in component_totals.items()}
+            epoch_losses["loss"] = running / max(1, len(loader))
+            log_scalars(writer, epoch_losses, global_step, "epoch_loss")
+            log_scalars(writer, {
+                "epoch": completed_epochs, "samples": epoch_samples,
+                "student_images": encoded_student_images, "reference_images": teacher_images,
+                "optimizer_steps": epoch_optimizer_steps, "elapsed_seconds": epoch_elapsed,
+                "data_wait_seconds": data_time, "batch_seconds": step_time,
+                "samples_per_second": epoch_samples / epoch_elapsed,
+                "warmup": int(warmup), "amp_skipped_updates": epoch_skipped_updates,
+            }, global_step, "epoch_progress")
+            log_scalars(writer, _optimizer_lrs(optimizer), global_step, "lr")
+            log_scalars(writer, {"scale": scaler.get_scale()}, global_step, "amp")
+            writer.flush()
         if stable_night:
             epoch_metrics = {
                 "epoch": completed_epochs,
@@ -681,3 +769,16 @@ def train_vpr(config: ExperimentConfig, *, smoke_epochs: int | None = None) -> P
     else:
         convergence_status = "incomplete"
     return best_path
+
+
+def _optimizer_lrs(optimizer) -> dict[str, float]:
+    return {name: group["lr"] for name, group in zip(
+        ("backbone", "aggregator", "classifier"), optimizer.param_groups
+    )}
+
+
+def _log_validation(writer, metrics: dict, step: int, best_score: float) -> None:
+    values = {f"recall_at_{key}": value for key, value in metrics.get("recalls", {}).items()}
+    values.update(mrr=metrics.get("mrr"), valid_queries=metrics.get("valid_queries"),
+                  total_queries=metrics.get("total_queries"), best_recall_at_1=best_score)
+    log_scalars(writer, values, step, "validation")

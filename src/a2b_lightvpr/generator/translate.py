@@ -12,6 +12,7 @@ from tqdm.auto import tqdm
 from ..checkpointing import file_sha256, write_json
 from ..config import ExperimentConfig
 from ..data import read_generated_manifest
+from ..paths import resolve_resource_path, resource_paths_equal
 from ..transforms import denormalize_generator, generator_inference_tensor
 from .networks import ResnetGenerator
 
@@ -33,6 +34,7 @@ GENERATED_FIELDS = (
     "dataset",
 )
 
+
 def validate_translation_checkpoint(state: dict, config: ExperimentConfig, limit: int | None) -> None:
     if state.get("kind") != "generator_inference":
         raise ValueError("translate-train requires an inference-only generator checkpoint")
@@ -45,13 +47,23 @@ def validate_translation_checkpoint(state: dict, config: ExperimentConfig, limit
         )
 
 
+def translation_metadata_matches(existing: dict, expected: dict) -> bool:
+    if existing.keys() != expected.keys():
+        return False
+    return all(
+        resource_paths_equal(existing[key], value)
+        if key in {"checkpoint", "source_manifest"} else existing[key] == value
+        for key, value in expected.items()
+    )
+
+
 def translate_training_set(
     config: ExperimentConfig,
     checkpoint: str | Path | None = None,
     *,
     limit: int | None = None,
 ) -> Path:
-    checkpoint = Path(checkpoint or Path(config.generator.output_dir) / "generator_final.pt")
+    checkpoint = resolve_resource_path(checkpoint or Path(config.generator.output_dir) / "generator_final.pt")
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
     validate_translation_checkpoint(state, config, limit)
     generator = ResnetGenerator()
@@ -84,7 +96,7 @@ def translate_training_set(
     }
     if metadata_path.is_file():
         existing = json.loads(metadata_path.read_text(encoding="utf-8"))
-        if existing != expected_metadata:
+        if not translation_metadata_matches(existing, expected_metadata):
             raise ValueError(
                 f"Translation output fingerprint mismatch at {metadata_path}; "
                 "use a new generated_root"
@@ -94,7 +106,8 @@ def translate_training_set(
             f"Translation images exist without fingerprint metadata at {image_root}"
         )
     image_root.mkdir(parents=True, exist_ok=True)
-    write_json(expected_metadata, metadata_path)
+    if not metadata_path.is_file():
+        write_json(expected_metadata, metadata_path)
     output_rows = []
     for row in tqdm(rows, desc="translate multi-dataset VPR train"):
         output_path = image_root / row["dataset"] / f'{row["image_id"]}.png'
@@ -126,6 +139,10 @@ def translate_training_set(
             }
         )
     manifest = output_root / "manifest.csv"
+    if manifest.is_file() and read_generated_manifest(manifest) == output_rows:
+        # Relocation alone must not rewrite the manifest hash used by teacher
+        # caches and historical checkpoints.
+        return manifest
     temporary = manifest.with_suffix(".csv.tmp")
     with temporary.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=GENERATED_FIELDS)

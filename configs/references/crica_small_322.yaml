@@ -1,10 +1,9 @@
 data:
-  robotcar_manifest: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/manifest.csv
-  robotcar_protocol: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/dvg_benchmark_paper/robotcar_nightday/protocol.json
+  robotcar_seasons_root: /home/admin123/github/datasets/RobotCar-Seasons
   generated_root: data/generated/multidataset_qsattn_official_150k
-  tokyo_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/tokyo247
-  svox_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/svox
-  msls_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/MSLS
+  tokyo_root: /home/admin123/github/datasets/tokyo247
+  svox_root: /home/admin123/github/datasets/svox
+  msls_root: /home/admin123/github/datasets/MSLS
 vpr:
   descriptor_dim: 512
   image_height: 322
@@ -13,7 +12,8 @@ vpr:
   workers: 4
   datasets: [msls, robotcar, svox]
 evaluation:
-  protocol: project
+  datasets: [msls_day_val]
+  protocol: standard
   database_domain: day
   recalls: [1, 5, 10]
 reference_models:
@@ -25,12 +25,12 @@ reference_models:
     native_size: [322, 322]
     native_batch_size: 1
     batch_dependent: true
-    repo: /home/admin123/diffusion_vpr_test/reference_code/CricaVPR
+    repo: /home/admin123/github/Lightweight-Day-to-Night/third_party/CricaVPR
     checkpoint: runs/reference/cricavpr-dinov2-s-gsv322-5376/model.pt
     required_files:
       - runs/reference/cricavpr-dinov2-s-gsv322-5376/training_metadata.json
     fit_source: gsv_cities
-    fit_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/gsv-cities
+    fit_root: /home/admin123/github/WORKSPACE/dataset/gsv-cities
     official_checkpoint: false
     training_status: re-trained-gsv322-fixed-budget
     note: CricaVPR-S dynamically partitioned for 23x23 DINOv2 patch grid and retrained at 322x322.
@@ -42,13 +42,13 @@ reference_models:
     native_size: [322, 322]
     native_batch_size: 1
     batch_dependent: true
-    repo: /home/admin123/diffusion_vpr_test/reference_code/CricaVPR
+    repo: /home/admin123/github/Lightweight-Day-to-Night/third_party/CricaVPR
     checkpoint: runs/reference/cricavpr-dinov2-s-gsv322-5376/model.pt
     projection_checkpoint: data/reference_pca/cricavpr_dinov2_s_gsv322_pca512.pt
     required_files:
       - runs/reference/cricavpr-dinov2-s-gsv322-5376/training_metadata.json
       - data/reference_pca/cricavpr_dinov2_s_gsv322_pca512.pt
     fit_source: gsv_cities
-    fit_root: /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/gsv-cities
+    fit_root: /home/admin123/github/WORKSPACE/dataset/gsv-cities
     official_checkpoint: false
     training_status: re-trained-gsv322-descriptor-compressed

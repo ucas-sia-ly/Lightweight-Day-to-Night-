@@ -23,6 +23,11 @@ def test_small_summary_uses_machine_readable_accuracy_and_resources(tmp_path):
             "evaluation_fingerprint": protocol,
         }
     summary = tmp_path / "reference/model/final_suite/native/adapted/summary.json"
+    datasets["robotcar_seasons_night"] = {
+        "recalls": None, "ground_truth_available": False,
+        "evaluation_status": "retrieval_only_no_public_test_gt", "total_queries": 429,
+    }
+    datasets["retired_protocol"] = {"recalls": {"1": 0.99}, "valid_queries": 10}
     summary.parent.mkdir(parents=True)
     summary.write_text(json.dumps({"datasets": datasets}), encoding="utf-8")
     resources = tmp_path / "resources.json"
@@ -36,3 +41,8 @@ def test_small_summary_uses_machine_readable_accuracy_and_resources(tmp_path):
     assert payload["schema"] == "dinov2_small_comparison_v1"
     assert payload["models"]["model"]["official_checkpoint"] is False
     assert payload["models"]["model"]["resources"]["parameters"] == 10
+    public = payload["models"]["model"]["per_protocol"]["robotcar_seasons_night"]
+    assert public["recalls"] is None
+    assert public["status"] == "retrieval_only_no_public_test_gt"
+    assert "robotcar_seasons_night" in payload["models"]["model"]["excluded"]
+    assert "retired_protocol" not in payload["models"]["model"]["per_protocol"]

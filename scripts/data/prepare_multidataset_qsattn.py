@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 from a2b_lightvpr.checkpointing import write_json, file_sha256
+from a2b_lightvpr.paths import resolve_manifest_image_path, resolve_resource_path
 
 DATASETS = ('robotcar', 'svox', 'msls')
 
@@ -56,11 +57,12 @@ def merge_manifests(root='data/generated/multidataset_qsattn', out=None,
         manifest = root / ds / 'manifest.csv'
         metadata_path = manifest.with_name('translation_metadata.json')
         metadata = json.loads(metadata_path.read_text())
-        checkpoint = Path(metadata['checkpoint'])
+        checkpoint = resolve_resource_path(metadata['checkpoint'])
         generator_sha = file_sha256(checkpoint)
         if metadata['checkpoint_sha256'] != generator_sha or metadata['checkpoint_step'] != 30000 or metadata.get('smoke_limit') is not None:
             raise ValueError(f'{ds}: wrong or incomplete translation checkpoint')
-        with (Path(source_root) / f'{ds}_vpr_train.csv').open() as f:
+        source_manifest = Path(source_root) / f'{ds}_vpr_train.csv'
+        with source_manifest.open() as f:
             source = list(csv.DictReader(f))
         expected = {r['image_id']: r for r in source}
         if len(expected) != len(source):
@@ -78,18 +80,22 @@ def merge_manifests(root='data/generated/multidataset_qsattn', out=None,
             if key not in expected or r['split'] != 'train':
                 raise ValueError(f'{ds}: unexpected source row {key}')
             src = expected[key]
-            if Path(r['source_path']).resolve() != Path(src['source_path']).resolve() or r['place_id'] != src['place_id']:
+            source_image = Path(resolve_manifest_image_path(r['source_path'], manifest)).resolve()
+            expected_image = Path(resolve_manifest_image_path(src['source_path'], source_manifest)).resolve()
+            if source_image != expected_image or r['place_id'] != src['place_id']:
                 raise ValueError(f'{ds}: source identity mismatch {key}')
             if r['generator_sha256'] != generator_sha:
                 raise ValueError(f'{ds}: wrong generator for {key}')
-            image = Path(r['generated_path']).resolve()
-            if not image.is_relative_to((root / ds).resolve()) or not image.is_file() or not Path(r['source_path']).is_file():
+            image = Path(resolve_manifest_image_path(r['generated_path'], manifest)).resolve()
+            if not image.is_relative_to((root / ds).resolve()) or not image.is_file() or not source_image.is_file():
                 raise ValueError(f'{ds}: missing or incorrectly routed image {key}')
             local_ids.add(key)
         if local_ids != set(expected):
             raise ValueError(f'{ds}: incomplete translation; expected {len(expected)}, found {len(local_ids)}')
         selected.sort(key=lambda r: r['image_id'])
         seen.update(local_ids)
+        # Keep original path strings in outputs; normalization above only checks
+        # migrated resources, preserving historical manifest bytes and hashes.
         allrows.extend(selected)
         audit[ds] = dict(selected=len(selected), excluded_other_datasets=len(original)-len(selected),
                          generator=str(checkpoint), generator_sha256=generator_sha,

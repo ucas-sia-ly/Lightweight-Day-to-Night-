@@ -16,8 +16,10 @@ from .models import (
     evaluate_dual_encoder,
     query_protocol_fingerprint,
     suite_rows,
+    suite_protocol_metadata,
 )
 from ..trained_suite import SUITE_PROTOCOLS, expand_suite_datasets
+from ..evaluation import resolve_database_domain
 from ..transforms import VPRTransform
 
 
@@ -63,6 +65,8 @@ def evaluate_reference_suite(
     root = Path(output_dir or (
         Path("runs/reference") / model_name / "final_suite" / transform_name / database_encoder
     ))
+    if config.evaluation.database_domain == "fake_night":
+        root = root / "fake_night"
     summary_path = root / "summary.json"
     configured_batch_size = (
         int(spec.get("native_batch_size", 1))
@@ -79,6 +83,12 @@ def evaluate_reference_suite(
     identity = {
         "model": model_name,
         "database_encoder": database_encoder,
+        "database_domain": config.evaluation.database_domain,
+        "fake_database_manifest_sha256": (
+            file_sha256(config.evaluation.fake_database_manifest)
+            if config.evaluation.database_domain == "fake_night" else ""
+        ),
+        "evaluation_recalls": list(config.evaluation.recalls),
         "transform": transform_name,
         "query_checkpoint_sha256": file_sha256(query_checkpoint),
         "database_checkpoint_sha256": file_sha256(database_checkpoint),
@@ -107,9 +117,13 @@ def evaluate_reference_suite(
         cached = json.loads(summary_path.read_text(encoding="utf-8"))
         if all(cached.get(key) == value for key, value in identity.items()):
             changed = False
+            for name in set(cached.get("datasets", {})) - set(SUITE_PROTOCOLS):
+                del cached["datasets"][name]
+                changed = True
             for name in set(selected).intersection(cached.get("datasets", {})):
                 dataset, split, radius, yaw, _ = SUITE_PROTOCOLS[name]
                 database, queries = suite_rows(config, dataset, split)
+                database, _ = resolve_database_domain(database, config.evaluation, split, queries)
                 query_fingerprint = query_protocol_fingerprint(
                     database, queries, radius, yaw
                 )
@@ -126,11 +140,9 @@ def evaluate_reference_suite(
                 if (
                     metrics.get("query_protocol_fingerprint") != query_fingerprint
                     or metrics.get("evaluation_fingerprint") != eval_fingerprint
+                    or any(metrics.get(key) != value for key, value in suite_protocol_metadata(config, dataset).items())
                 ):
-                    metrics["query_protocol_fingerprint"] = query_fingerprint
-                    metrics["evaluation_fingerprint"] = eval_fingerprint
-                    metrics["protocol_fingerprint"] = query_fingerprint
-                    write_json(cached["datasets"][name], root / name / "metrics.json")
+                    del cached["datasets"][name]
                     changed = True
             if set(selected).issubset(cached.get("datasets", {})):
                 if changed:
@@ -169,6 +181,7 @@ def evaluate_reference_suite(
             continue
         dataset, split, radius, yaw, _ = SUITE_PROTOCOLS[name]
         database, queries = suite_rows(config, dataset, split)
+        database, database_digest = resolve_database_domain(database, config.evaluation, split, queries)
         query_fingerprint = query_protocol_fingerprint(database, queries, radius, yaw)
         transform_kind = "direct-resize" if transform_name == "native" else "fit-and-pad"
         padding = "none" if transform_name == "native" else "imagenet-mean-centered"
@@ -193,6 +206,7 @@ def evaluate_reference_suite(
             config.vpr.workers,
         )
         metrics.update({
+            **suite_protocol_metadata(config, dataset),
             "dataset": dataset,
             "split": split,
             "positive_radius_m": radius,
@@ -209,6 +223,8 @@ def evaluate_reference_suite(
             "padding": padding,
             "normalization": "imagenet",
             "database_encoder": database_encoder,
+            "database_domain": config.evaluation.database_domain,
+            "database_manifest_sha256": database_digest,
             "descriptor_dim": int(spec["descriptor_dim"]),
             "extraction_batch_size": batch_size,
             "batch_dependent_mode": identity["batch_dependent_mode"],

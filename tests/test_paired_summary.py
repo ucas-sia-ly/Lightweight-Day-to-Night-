@@ -15,7 +15,8 @@ def _suite(path, value):
         "benchmark": {"parameters": 10},
         "datasets": {
             name: {
-                "recalls": {"1": value, "5": value + 0.1, "10": value + 0.2},
+                "recalls": None if name.startswith("robotcar_seasons_") else {"1": value, "5": value + 0.1, "10": value + 0.2},
+                "ground_truth_available": not name.startswith("robotcar_seasons_"),
                 "evaluation_fingerprint": name,
             }
             for name in REPORT_PROTOCOLS
@@ -34,6 +35,8 @@ def test_paired_summary_reports_protocol_and_macro_deltas(tmp_path):
     assert report["descriptor_dim"] == 544
     assert report["night"]["delta"] == pytest.approx(0.05)
     assert report["protocols"]["tokyo_night"]["recall1_delta"] == pytest.approx(0.05)
+    assert report["protocols"]["robotcar_seasons_night"]["candidate"] is None
+    assert report["protocols"]["robotcar_seasons_night"]["recall1_delta"] is None
 
 
 def test_paired_summary_rejects_unpaired_initialization(tmp_path):

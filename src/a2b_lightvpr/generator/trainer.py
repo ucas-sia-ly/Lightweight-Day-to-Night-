@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import random
-from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +19,7 @@ from ..checkpointing import (
 )
 from ..config import ExperimentConfig
 from ..data import BalancedGeneratorDataset
+from ..training_logging import create_summary_writer, log_scalars
 from .networks import (
     PatchDiscriminator,
     ResnetGenerator,
@@ -70,7 +70,7 @@ def _checkpoint_payload(
         "step": int(step),
         "config_fingerprint": config.fingerprint(),
         "config": config.as_dict(),
-        "data_fingerprints": data_fingerprints(config),
+        "data_fingerprints": data_fingerprints(config, purpose="generator"),
         "generator": generator.state_dict(),
         "discriminator": discriminator.state_dict(),
         "content_objective": _objective_state(objective),
@@ -113,6 +113,9 @@ def train_generator(config: ExperimentConfig, *, smoke_steps: int | None = None)
         state = torch.load(cfg.resume, map_location=device, weights_only=False)
         if not checkpoint_config_matches(state, config, ("data", "generator")):
             raise ValueError("Generator resume config does not match the current config")
+        current_data = data_fingerprints(config, purpose="generator")
+        if any(state.get("data_fingerprints", {}).get(key) != value for key, value in current_data.items()):
+            raise ValueError("Generator resume training manifest does not match the checkpoint")
         generator.load_state_dict(state["generator"])
         discriminator.load_state_dict(state["discriminator"])
         objective.load_state_dict(state["content_objective"], strict=False)
@@ -135,84 +138,128 @@ def train_generator(config: ExperimentConfig, *, smoke_steps: int | None = None)
         drop_last=True,
     )
 
-    progress = tqdm(total=max_steps, initial=start_step, desc=f"generator/{cfg.objective}")
     final_path = output_dir / "generator_final.pt"
-    for step, batch in enumerate(loader, start=start_step + 1):
-        if step > max_steps:
-            break
-        source = batch["source"].to(device, non_blocking=True)
-        target = batch["target"].to(device, non_blocking=True)
+    with create_summary_writer(
+        cfg, output_dir, purge_step=start_step + 1 if cfg.resume else None
+    ) as writer, tqdm(
+        total=max_steps, initial=start_step, desc=f"generator/{cfg.objective}"
+    ) as progress:
+        for step, batch in enumerate(loader, start=start_step + 1):
+            if step > max_steps:
+                break
+            source = batch["source"].to(device, non_blocking=True)
+            target = batch["target"].to(device, non_blocking=True)
 
-        with torch.autocast(device.type, enabled=use_amp):
-            fake, source_features = generator(source, return_features=True)
-            _, fake_features = generator.encode_features(fake)
-            identity_features = target_features = None
-            if cfg.objective == "qsattn" and cfg.qs_nce_identity:
-                identity, target_features = generator(target, return_features=True)
-                _, identity_features = generator.encode_features(identity)
+            with torch.autocast(device.type, enabled=use_amp):
+                fake, source_features = generator(source, return_features=True)
+                _, fake_features = generator.encode_features(fake)
+                identity_features = target_features = None
+                if cfg.objective == "qsattn" and cfg.qs_nce_identity:
+                    identity, target_features = generator(target, return_features=True)
+                    _, identity_features = generator.encode_features(identity)
 
-        optimizer_d.zero_grad(set_to_none=True)
-        with torch.autocast(device.type, enabled=use_amp):
-            loss_d = lsgan_discriminator_loss(discriminator(target), discriminator(fake.detach()))
-        scaler.scale(loss_d).backward()
-        scaler.step(optimizer_d)
+            optimizer_d.zero_grad(set_to_none=True)
+            with torch.autocast(device.type, enabled=use_amp):
+                loss_d = lsgan_discriminator_loss(discriminator(target), discriminator(fake.detach()))
+            scaler.scale(loss_d).backward()
+            scaler.step(optimizer_d)
 
-        discriminator.requires_grad_(False)
-        optimizer_g.zero_grad(set_to_none=True)
-        with torch.autocast(device.type, enabled=use_amp):
-            loss_gan = lsgan_generator_loss(discriminator(fake))
-            loss_content_source = objective.generator_loss(
-                source, fake, source_features, fake_features
+            discriminator.requires_grad_(False)
+            optimizer_g.zero_grad(set_to_none=True)
+            with torch.autocast(device.type, enabled=use_amp):
+                loss_gan = lsgan_generator_loss(discriminator(fake))
+                loss_content_source = objective.generator_loss(
+                    source, fake, source_features, fake_features
+                )
+                loss_content_identity = (
+                    objective.identity_loss(target_features, identity_features)
+                    if target_features is not None and identity_features is not None else None
+                )
+                loss_content = (
+                    0.5 * (loss_content_source + loss_content_identity)
+                    if loss_content_identity is not None else loss_content_source
+                )
+                loss_g = loss_gan + cfg.content_weight * loss_content
+            scaler.scale(loss_g).backward()
+            scaler.step(optimizer_g)
+            scale_before_update = scaler.get_scale()
+            scaler.update()
+            discriminator.requires_grad_(True)
+            if scaler.get_scale() >= scale_before_update:
+                scheduler_g.step()
+                scheduler_d.step()
+
+            log_due = (
+                step == start_step + 1
+                or step % cfg.tensorboard_log_interval == 0
+                or step == max_steps
             )
-            loss_content_identity = (
-                objective.identity_loss(target_features, identity_features)
-                if target_features is not None and identity_features is not None else None
-            )
-            loss_content = (
-                0.5 * (loss_content_source + loss_content_identity)
-                if loss_content_identity is not None else loss_content_source
-            )
-            loss_g = loss_gan + cfg.content_weight * loss_content
-        scaler.scale(loss_g).backward()
-        scaler.step(optimizer_g)
-        scale_before_update = scaler.get_scale()
-        scaler.update()
-        discriminator.requires_grad_(True)
-        if scaler.get_scale() >= scale_before_update:
-            scheduler_g.step()
-            scheduler_d.step()
-
-        progress.update(1)
-        progress.set_postfix(g=f"{loss_g.item():.3f}", d=f"{loss_d.item():.3f}")
-        due = step % cfg.checkpoint_every == 0 or step == max_steps
-        if due:
-            state_path = output_dir / "checkpoints" / "latest.pt"
-            atomic_torch_save(
-                _checkpoint_payload(
-                    config,
+            if writer is not None and log_due:
+                metrics = {
+                    "loss_g": loss_g,
+                    "loss_d": loss_d,
+                    "loss_gan": loss_gan,
+                    "loss_content": loss_content,
+                    "loss_content_source": loss_content_source,
+                    "amp_scale": scaler.get_scale(),
+                    "amp_step_skipped": float(scaler.get_scale() < scale_before_update),
+                }
+                if loss_content_identity is not None:
+                    metrics["loss_content_identity"] = loss_content_identity
+                log_scalars(writer, metrics, step, prefix="train/")
+                log_scalars(
+                    writer,
+                    {
+                        "generator": optimizer_g.param_groups[0]["lr"],
+                        "discriminator": optimizer_d.param_groups[0]["lr"],
+                    },
                     step,
-                    generator,
-                    discriminator,
-                    objective,
-                    optimizer_g,
-                    optimizer_d,
-                    scheduler_g,
-                    scheduler_d,
-                    scaler,
-                ),
-                state_path,
+                    prefix="lr/",
+                )
+            image_due = cfg.tensorboard_image_interval > 0 and (
+                step == start_step + 1
+                or step % cfg.tensorboard_image_interval == 0
+                or step == max_steps
             )
-            atomic_torch_save(
-                {
-                    "schema_version": SCHEMA_VERSION,
-                    "kind": "generator_inference",
-                    "step": int(step),
-                    "objective": cfg.objective,
-                    "config_fingerprint": config.fingerprint(),
-                    "data_fingerprints": data_fingerprints(config),
-                    "generator": generator.state_dict(),
-                },
-                final_path,
-            )
-    progress.close()
+            if writer is not None and image_due:
+                # Reuse the current batch and forward results; logging adds no model pass.
+                samples = {"day": source, "fake_night": fake, "real_night": target}
+                if loss_content_identity is not None:
+                    samples["identity_night"] = identity
+                for name, images in samples.items():
+                    preview = images[:3].detach().float().add(1).mul(0.5).clamp(0, 1).cpu()
+                    writer.add_images(f"images/{name}", preview, global_step=step)
+
+            progress.update(1)
+            progress.set_postfix(g=f"{loss_g.item():.3f}", d=f"{loss_d.item():.3f}")
+            due = step % cfg.checkpoint_every == 0 or step == max_steps
+            if due:
+                state_path = output_dir / "checkpoints" / "latest.pt"
+                atomic_torch_save(
+                    _checkpoint_payload(
+                        config,
+                        step,
+                        generator,
+                        discriminator,
+                        objective,
+                        optimizer_g,
+                        optimizer_d,
+                        scheduler_g,
+                        scheduler_d,
+                        scaler,
+                    ),
+                    state_path,
+                )
+                atomic_torch_save(
+                    {
+                        "schema_version": SCHEMA_VERSION,
+                        "kind": "generator_inference",
+                        "step": int(step),
+                        "objective": cfg.objective,
+                        "config_fingerprint": config.fingerprint(),
+                        "data_fingerprints": data_fingerprints(config, purpose="generator"),
+                        "generator": generator.state_dict(),
+                    },
+                    final_path,
+                )
     return final_path

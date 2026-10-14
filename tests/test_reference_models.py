@@ -1,4 +1,3 @@
-import csv
 import io
 import json
 from pathlib import Path
@@ -12,7 +11,6 @@ from a2b_lightvpr.references.models import (
     SuiteRow,
     _strict_state,
     _msls_rows,
-    _robotcar_day_rows,
     _svox_rows,
     _tokyo_rows,
     audit_reference_models,
@@ -22,20 +20,29 @@ from a2b_lightvpr.references.models import (
     validate_reference_resources,
 )
 from a2b_lightvpr.config import DataConfig, ExperimentConfig
+from a2b_lightvpr.data import read_generated_manifest
+from a2b_lightvpr.paths import DATASETS_ROOT, PROJECT_ROOT
 from a2b_lightvpr.transforms import VPRTransform
 
 
-DATA_ROOT = Path("/home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset")
+DATA_ROOT = DATASETS_ROOT
 
 
-def test_strict_state_loads_training_checkpoint_with_numpy_rng(tmp_path):
+@pytest.mark.parametrize("incomplete_core_namespace", [False, True])
+def test_strict_state_loads_training_checkpoint_with_numpy_rng(tmp_path, monkeypatch, incomplete_core_namespace):
+    import numpy as np
+    from types import SimpleNamespace
+
     source = torch.nn.Linear(3, 2)
     checkpoint = tmp_path / "training.pt"
     torch.save(
-        {"model": source.state_dict(), "rng": {"numpy": __import__("numpy").random.get_state()}},
+        {"model": source.state_dict(), "rng": {"numpy": np.random.get_state()}},
         checkpoint,
     )
     target = torch.nn.Linear(3, 2)
+    if incomplete_core_namespace:
+        # Reproduce NumPy 1.26's partially imported numpy._core package.
+        monkeypatch.setattr(np, "_core", SimpleNamespace(), raising=False)
 
     _strict_state(target, checkpoint)
 
@@ -106,14 +113,12 @@ def test_local_tokyo_day_protocol_golden_counts():
     assert tuple(map(len, _tokyo_rows(DATA_ROOT / "tokyo247", "tokyo_day"))) == (75984, 375)
 
 
-def test_robotcar_day_uses_fixed_untrained_traversals():
-    manifest = DATA_ROOT / "dvg_benchmark_paper/robotcar_nightday/manifest.csv"
-    if not manifest.is_file():
-        pytest.skip("local RobotCar unavailable")
-    database, queries = _robotcar_day_rows(manifest)
-    assert {row.traverse for row in database} == {"2014-07-14-14-49-50"}
-    assert {row.traverse for row in queries} == {"2015-08-12-15-04-18"}
-    assert all(row.split != "train" for row in database + queries)
+@pytest.mark.skipif(not (DATA_ROOT / "RobotCar-Seasons").is_dir(), reason="local public Seasons unavailable")
+def test_public_seasons_protocol_golden_counts():
+    from a2b_lightvpr.references.models import suite_rows
+    config = ExperimentConfig(DataConfig(robotcar_seasons_root=str(DATA_ROOT / "RobotCar-Seasons")))
+    assert tuple(map(len, suite_rows(config, "robotcar_seasons_night"))) == (6954, 429)
+    assert tuple(map(len, suite_rows(config, "robotcar_seasons_day"))) == (6954, 1443)
 
 
 def test_day_validation_queries_do_not_overlap_vpr_training_manifest():
@@ -122,8 +127,7 @@ def test_day_validation_queries_do_not_overlap_vpr_training_manifest():
         pytest.skip("VPR training manifest unavailable")
     if not any((DATA_ROOT / name).is_dir() for name in ("MSLS", "svox")):
         pytest.skip("Local MSLS/SVOX validation datasets unavailable")
-    with manifest.open(newline="", encoding="utf-8") as handle:
-        training = {str(Path(row["source_path"]).resolve()) for row in csv.DictReader(handle)}
+    training = {str(Path(row["source_path"]).resolve()) for row in read_generated_manifest(manifest)}
     day_queries = []
     if (DATA_ROOT / "MSLS").is_dir():
         day_queries.extend(_msls_rows(DATA_ROOT / "MSLS", "day")[1])
@@ -285,7 +289,7 @@ def test_reference_benchmark_reports_storage_and_batch_dependence(tmp_path, monk
 
     monkeypatch.setattr("a2b_lightvpr.references.models.build_reference_model", lambda spec: Model())
     monkeypatch.setattr("torch.cuda.is_available", lambda: False)
-    config = ExperimentConfig(DataConfig("robot.csv", "protocol.json"))
+    config = ExperimentConfig(DataConfig())
     output = benchmark_reference_models(
         config, registry, ("fixture",), warmup=1, iterations=2,
         output=tmp_path / "resources.json",

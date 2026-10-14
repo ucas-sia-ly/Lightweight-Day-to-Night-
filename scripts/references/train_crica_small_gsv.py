@@ -47,9 +47,9 @@ def official_dataset(repo: Path, root: Path, image_size: int):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", default="/home/admin123/diffusion_vpr_test/reference_code/CricaVPR")
-    parser.add_argument("--gsv-root", default="/home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/gsv-cities")
-    parser.add_argument("--checkpoint", default="/home/admin123/diffusion_vpr_test/reference_code/salad/dinov2_vits14_pretrain.pth")
+    parser.add_argument("--repo", default="/home/admin123/github/Lightweight-Day-to-Night/third_party/CricaVPR")
+    parser.add_argument("--gsv-root", default="/home/admin123/github/WORKSPACE/dataset/gsv-cities")
+    parser.add_argument("--checkpoint", default="/home/admin123/.cache/torch/hub/checkpoints/dinov2_vits14_pretrain.pth")
     parser.add_argument("--output", default="runs/reference/cricavpr-dinov2-s-gsv-5376")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=32, help="Places per batch; four images per place")

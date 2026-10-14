@@ -180,6 +180,7 @@ def build_descriptor_model(
     stable_dustbin_gamma_init: float = 1.0,
     stable_dustbin_gamma_max: float = 4.0,
     stable_sinkhorn_iterations: int = 20,
+    load_initial_checkpoint: bool = True,
 ) -> nn.Module:
     if model_family == "stable_night_salad":
         if (image_height, image_width) != (322, 322) or aggregator_name != "salad" or descriptor_dim != 544:
@@ -193,7 +194,7 @@ def build_descriptor_model(
             gamma_max=stable_dustbin_gamma_max,
             sinkhorn_iterations=stable_sinkhorn_iterations,
         )
-        if init_checkpoint:
+        if init_checkpoint and load_initial_checkpoint:
             # A Compact SALAD-S checkpoint can initialize all existing modules;
             # only the newly introduced reliability parameters may be absent.
             result = model.load_state_dict(_checkpoint_state(init_checkpoint), strict=False)
@@ -207,7 +208,7 @@ def build_descriptor_model(
         if aggregator_name != "mixvpr" or descriptor_dim != 512 or (image_height, image_width) != (322, 322):
             raise ValueError("DINO-Mix requires MixVPR, 512D and 322x322")
         model = DINOMixStudent(backbone_repo, backbone_name, backbone_checkpoint, backbone_trainable_blocks)
-        if init_checkpoint:
+        if init_checkpoint and load_initial_checkpoint:
             _strict_load_state(model, init_checkpoint)
         return model
     if model_family == "salad":
@@ -238,20 +239,22 @@ def build_descriptor_model(
         if (image_height, image_width) != (320, 320):
             raise ValueError("Official MixVPR requires 320x320 input")
         model = OfficialMixVPRModel(descriptor_dim)
-        if not init_checkpoint:
+        if not init_checkpoint and load_initial_checkpoint:
             raise ValueError("Official MixVPR requires a checkpoint")
-        _strict_load_state(model, init_checkpoint)
+        if load_initial_checkpoint:
+            _strict_load_state(model, init_checkpoint)
         return model
     if model_family == "netvlad":
         if descriptor_dim != 4096 or num_clusters != 64:
             raise ValueError("Official NetVLAD requires 64 clusters and a 4096-D WPCA output")
-        if not init_checkpoint:
+        if not init_checkpoint and load_initial_checkpoint:
             raise ValueError("Official NetVLAD requires the public Pitts30k checkpoint")
         backbone, channels = _build_vgg16(False)
         model = DescriptorModel(
             backbone, NetVLADWPCA(descriptor_dim, num_clusters), descriptor_dim, "netvlad"
         )
-        _strict_load_netvlad(model, init_checkpoint)
+        if load_initial_checkpoint:
+            _strict_load_netvlad(model, init_checkpoint)
         return model
     backbone, channels = _build_resnet50(pretrained)
     if aggregator_name == "gem":
@@ -264,7 +267,7 @@ def build_descriptor_model(
     else:
         raise ValueError(f"Unsupported aggregator: {aggregator_name}")
     model = DescriptorModel(backbone, aggregator, descriptor_dim, aggregator_name)
-    if init_checkpoint:
+    if init_checkpoint and load_initial_checkpoint:
         result = load_initial_weights(model, init_checkpoint, "full")
         if result["missing"] or result["unexpected"]:
             raise ValueError(f"Strict initial checkpoint mismatch: {result}")

@@ -21,6 +21,6 @@ else
     cli train-vpr --config "$config"; or exit 1
 end
 cli evaluate-trained-suite --config "$config" --checkpoint "$output/model_best.pt" \
-    --datasets robotcar_project svox_night tokyo_night msls_night robotcar_day svox_day svox_sun tokyo_day msls_day_val; or exit 1
+    --datasets robotcar_seasons_night svox_night tokyo_night msls_night robotcar_seasons_day svox_day svox_sun tokyo_day msls_day_val; or exit 1
 cli benchmark --config "$config" --checkpoint "$output/model_best.pt" --warmup 20 --iterations 100; or exit 1
 echo "Complete: $output/final_suite/summary.json"

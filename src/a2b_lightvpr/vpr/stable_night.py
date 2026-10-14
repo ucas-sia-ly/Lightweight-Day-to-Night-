@@ -20,6 +20,7 @@ def stable_night_batch_loss(
     source_keys: torch.Tensor,
     cfg,
     reference_backbone=None,
+    diagnostics: dict | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor], int]:
     """Encode all configured views and apply independently weighted objectives.
 
@@ -100,6 +101,17 @@ def stable_night_batch_loss(
                 mass = aux["cluster_mass"].detach().float()
                 components[f"{name}_cluster_mass_min"] = mass.min()
                 components[f"{name}_cluster_mass_max_error"] = (mass - 1.0).abs().max()
+            if diagnostics is not None:
+                height, width = aux["local_features"].shape[-2:]
+                count = min(3, images[name].shape[0])
+                diagnostics[name] = {
+                    "images": images[name][:count].detach(),
+                    "reliability": aux["reliability"][:count].detach().reshape(count, 1, height, width),
+                    "dustbin_assignment": aux["dustbin_assignment"][:count].detach().reshape(count, 1, height, width),
+                    "valid_mask": valid[:count].reshape(count, 1, height, width),
+                }
+                if target is not None and name == "day":
+                    diagnostics["reference_target"] = target[:count].detach().reshape(count, 1, height, width)
         if hasattr(model.aggregator, "gamma"):
             components["dustbin_gamma"] = model.aggregator.gamma.detach().float()
         components["loss"] = loss.detach()

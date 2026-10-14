@@ -5,7 +5,8 @@ import statistics
 from pathlib import Path
 
 from ..checkpointing import write_json
-from .seed0_summary import DAY_MACRO, NIGHT_MACRO, REPORT_PROTOCOLS
+from .protocols import (DAY_MACRO, NIGHT_MACRO, REPORT_PROTOCOLS, difference, excluded,
+                        macro, recall as _recall, validate_protocol_pair)
 
 
 RECALLS = (1, 5, 10)
@@ -23,32 +24,20 @@ def _load_suite(path: str | Path, expected_seed: int | None = None) -> dict:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if int(payload.get("descriptor_dim", 0)) != 512:
         raise ValueError(f"Expected a 512-D suite at {path}")
-    missing = sorted(set(REPORT_PROTOCOLS) - set(payload.get("datasets", {})))
-    if missing:
-        raise ValueError(f"Suite is missing protocols at {path}: {missing}")
     seed = int(payload.get("random_seed", 0))
     if expected_seed is not None and seed != expected_seed:
         raise ValueError(f"Expected random seed {expected_seed} at {path}, got {seed}")
     return payload
 
 
-def _fingerprint(payload: dict, protocol: str) -> str:
-    metrics = payload["datasets"][protocol]
-    return metrics.get("evaluation_fingerprint", metrics.get("protocol_fingerprint", ""))
-
-
-def _recall(payload: dict, protocol: str, recall: int) -> float:
-    return float(payload["datasets"][protocol]["recalls"][str(recall)])
-
-
-def _macro(payload: dict, protocols: tuple[str, ...]) -> float:
-    return statistics.fmean(_recall(payload, protocol, 1) for protocol in protocols)
-
-
-def _summary(values: list[float]) -> dict:
+def _summary(values: list[float | None]) -> dict:
     if len(values) < 2:
         raise ValueError("Multi-seed statistics require at least two values")
+    if any(value is None for value in values):
+        return {"status": "not_measured_for_all_runs", "values": values,
+                "mean": None, "sample_std": None, "count": len(values)}
     return {
+        "status": "measured",
         "values": values,
         "mean": statistics.fmean(values),
         "sample_std": statistics.stdev(values),
@@ -72,15 +61,15 @@ def _validate_runs(payloads: list[dict]) -> None:
         if _pair_identity(payload) != identity:
             raise ValueError("Paper experiment suites do not share the same model/data identity")
     for protocol in REPORT_PROTOCOLS:
-        fingerprints = {_fingerprint(payload, protocol) for payload in payloads}
-        if "" in fingerprints or len(fingerprints) != 1:
-            raise ValueError(f"Evaluation fingerprint mismatch for {protocol}")
+        for payload in payloads[1:]:
+            validate_protocol_pair(payloads[0], payload, protocol)
 
 
 def _aggregate_group(payloads: list[dict]) -> dict:
     return {
-        "night_macro_recall1": _summary([_macro(item, NIGHT_MACRO) for item in payloads]),
-        "day_macro_recall1": _summary([_macro(item, DAY_MACRO) for item in payloads]),
+        "excluded": [excluded(item) for item in payloads],
+        "night_macro_recall1": _summary([macro(item, NIGHT_MACRO) for item in payloads]),
+        "day_macro_recall1": _summary([macro(item, DAY_MACRO) for item in payloads]),
         "protocols": {
             protocol: {
                 f"recall{recall}": _summary(
@@ -96,13 +85,13 @@ def _aggregate_group(payloads: list[dict]) -> dict:
 def _aggregate_deltas(baselines: list[dict], candidates: list[dict]) -> dict:
     def values(metric):
         return [
-            metric(candidate) - metric(baseline)
+            difference(metric(candidate), metric(baseline))
             for baseline, candidate in zip(baselines, candidates)
         ]
 
     return {
-        "night_macro_recall1": _summary(values(lambda item: _macro(item, NIGHT_MACRO))),
-        "day_macro_recall1": _summary(values(lambda item: _macro(item, DAY_MACRO))),
+        "night_macro_recall1": _summary(values(lambda item: macro(item, NIGHT_MACRO))),
+        "day_macro_recall1": _summary(values(lambda item: macro(item, DAY_MACRO))),
         "protocols": {
             protocol: {
                 f"recall{recall}": _summary(
@@ -118,8 +107,9 @@ def _aggregate_deltas(baselines: list[dict], candidates: list[dict]) -> dict:
 def _single_run(payload: dict) -> dict:
     return {
         "random_seed": int(payload.get("random_seed", 0)),
-        "night_macro_recall1": _macro(payload, NIGHT_MACRO),
-        "day_macro_recall1": _macro(payload, DAY_MACRO),
+        "excluded": excluded(payload),
+        "night_macro_recall1": macro(payload, NIGHT_MACRO),
+        "day_macro_recall1": macro(payload, DAY_MACRO),
         "training": payload.get("training", {}),
         "protocols": {
             protocol: {
@@ -155,6 +145,7 @@ def summarize_cdnd_multiseed(
         "status": "multi_seed_descriptive",
         "random_seeds": seeds,
         "statistics": "mean_and_sample_standard_deviation; no significance claim",
+        "macro_definition": "fixed_supervised_protocols_v2",
         "night_macro_protocols": list(NIGHT_MACRO),
         "day_macro_protocols": list(DAY_MACRO),
         "main": {

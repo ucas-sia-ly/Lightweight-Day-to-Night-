@@ -21,7 +21,7 @@ def _fixture_config(tmp_path):
     generated.mkdir()
     (generated / "manifest.csv").write_text("image_id\nfixture\n", encoding="utf-8")
     config = ExperimentConfig(
-        DataConfig("robot.csv", "protocol.json", generated_root=str(generated))
+        DataConfig(generated_root=str(generated))
     )
     return replace(
         config, vpr=replace(config.vpr, output_dir=str(tmp_path / "run"), workers=0)
@@ -59,10 +59,10 @@ def test_trained_suite_writes_protocol_bound_metrics(tmp_path, monkeypatch):
         },
     )
     output = trained_suite.evaluate_trained_suite(
-        config, checkpoint, ("robotcar_project",)
+        config, checkpoint, ("svox_night",)
     )
     payload = json.loads(output.read_text(encoding="utf-8"))
-    metrics = payload["datasets"]["robotcar_project"]
+    metrics = payload["datasets"]["svox_night"]
     assert metrics["recalls"]["1"] == 0.75
     assert metrics["checkpoint_sha256"] == file_sha256(checkpoint)
     assert len(metrics["evaluation_fingerprint"]) == 64
@@ -79,11 +79,12 @@ def test_trained_suite_reuses_matching_summary(tmp_path, monkeypatch):
         "manifest_sha256": file_sha256(tmp_path / "generated" / "manifest.csv"),
         "database_domain": "day", "database_manifest_sha256": {},
         "model_family": config.vpr.model_family, "encoder": config.vpr.model_family,
+        "evaluation_recalls": list(config.evaluation.recalls),
         "aggregator": config.vpr.aggregator, "descriptor_dim": 512,
         "initialization": "fixture", "input_size": [256, 384],
         "benchmark": {"parameters": 10, "peak_cuda_mib": 20.0,
                       "latency_ms": {"p50": 1.0, "p95": 2.0}},
-        "datasets": {"robotcar_project": {
+        "datasets": {"svox_night": {
             "recalls": {"1": 0.8, "5": 0.9, "10": 1.0},
             "mrr": 0.85, "valid_queries": 10,
             "query_protocol_fingerprint": "fixture",
@@ -104,5 +105,5 @@ def test_trained_suite_reuses_matching_summary(tmp_path, monkeypatch):
         lambda *args: (_ for _ in ()).throw(AssertionError("must use cache")),
     )
     assert trained_suite.evaluate_trained_suite(
-        config, checkpoint, ("robotcar_project",)
+        config, checkpoint, ("svox_night",)
     ) == summary

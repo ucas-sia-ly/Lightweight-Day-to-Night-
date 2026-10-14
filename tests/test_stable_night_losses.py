@@ -217,7 +217,7 @@ def test_cpu_stable_training_epoch_preserves_checkpoint_and_optimizer_contract(t
     backbone_checkpoint = tmp_path / "backbone.pt"
     backbone_checkpoint.write_bytes(b"frozen reference checkpoint")
     config = ExperimentConfig(DataConfig(
-        str(robot_manifest), str(protocol), vpr_source_manifest=str(source_manifest),
+        vpr_source_manifest=str(source_manifest),
         generated_root=str(tmp_path / "no_generated_data"),
     ))
     config = replace(config, vpr=replace(

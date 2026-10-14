@@ -12,7 +12,7 @@ set registry configs/references/small.yaml
 set output runs/reference/boq-dinov2-s-12288-distilled
 set pca data/reference_pca/boq_dinov2_s_distilled_train_pca512.pt
 set pca_cache data/reference_pca/boq_dinov2_s_distilled_train_raw_fp16.npy
-set protocols robotcar_project svox_night msls_night tokyo_night robotcar_day svox_day svox_sun tokyo_day
+set protocols robotcar_seasons_night svox_night msls_night tokyo_night robotcar_seasons_day svox_day svox_sun tokyo_day
 
 function die
     echo "ERROR: $argv" >&2
@@ -38,9 +38,9 @@ function training_complete
 end
 
 command -s "$python_bin" >/dev/null; or die "missing interpreter: $python_bin"
-test -f /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth; or die "missing DINOv2-S-Reg4 checkpoint"
-test -f /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_12288.pth; or die "missing BoQ-B teacher checkpoint"
-test -d /home/admin123/diffusion_vpr_test/CycleGAN-turbo_NetVLAD/dataset/gsv-cities/Images; or die "missing GSV-Cities images"
+test -f /home/admin123/.cache/torch/hub/checkpoints/dinov2_vits14_reg4_pretrain.pth; or die "missing DINOv2-S-Reg4 checkpoint"
+test -f /home/admin123/.cache/torch/hub/checkpoints/dinov2_12288.pth; or die "missing BoQ-B teacher checkpoint"
+test -d /home/admin123/github/WORKSPACE/dataset/gsv-cities/Images; or die "missing GSV-Cities images"
 no_competing_training; or die "another VPR/Small-reference job is running; wait before starting BoQ-S"
 gpu_idle; or die "GPU 0 has active compute processes; wait before starting BoQ-S"
 "$python_bin" -c 'import shutil, sys, torch; free=shutil.disk_usage(".").free/2**30; print(f"cuda={torch.cuda.is_available()}; free_disk={free:.1f} GiB"); sys.exit(0 if torch.cuda.is_available() and free >= 10 else 1)'; or die "CUDA and at least 10 GiB free disk are required"

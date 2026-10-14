@@ -22,15 +22,16 @@ ANCHORS={
  'boq_pca':'boq-dinov2-s-pca512/final_suite/native/adapted',
  'cdnd':None,
 }
-PROTOCOLS=('robotcar_project','svox_night','tokyo_night','msls_night')
+PROTOCOLS=('robotcar_seasons_night','svox_night','tokyo_night','msls_night')
 
 
 def main():
  p=argparse.ArgumentParser(description=__doc__)
  p.add_argument('--smoke',action='store_true',help='Load all models and validate 224 forward only')
- p.add_argument('--datasets',nargs='+',choices=list(SUITE_PROTOCOLS),default=list(PROTOCOLS))
+ p.add_argument('--datasets',nargs='+',choices=['all',*SUITE_PROTOCOLS],default=list(PROTOCOLS))
  p.add_argument('--output',default='runs/reference/same_weights_224')
  args=p.parse_args();torch.set_num_threads(4)
+ if 'all' in args.datasets:args.datasets=list(SUITE_PROTOCOLS)
  config=load_config('configs/vpr/cdnd_salad_512.yaml')
  device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
  table=[]
@@ -40,7 +41,7 @@ def main():
   checksum=file_sha256(checkpoint)
   stored=summary.get('query_checkpoint_sha256',summary.get('checkpoint_sha256'))
   if stored is None and name=='cdnd':
-   stored=json.loads((anchor/'robotcar_project/metrics.json').read_text())['checkpoint_sha256']
+   stored=json.loads((anchor/'svox_night/metrics.json').read_text())['checkpoint_sha256']
   if checksum!=stored:raise ValueError(f'{name}: checkpoint differs from original table')
   spec=model.qualitative_spec
   if spec.get('projection_checkpoint'):
@@ -88,7 +89,8 @@ def main():
      metrics=evaluate_dual_encoder(model,model,db,queries,transform,radius,yaw,(1,5,10),device,batch,4)
      write_json(dict(identity=identity,metrics=metrics,anchor=str(anchor),original_size_retest=str(baseline_path) if baseline_path else None),path)
     table.append(dict(Method=name,Dataset=protocol,Image='224x224',Dim=model.descriptor_dim,Params_M=sum(p.numel() for p in model.parameters())/1e6,
-        **{f'R@{k}':100*metrics['recalls'][str(k)] for k in (1,5,10)}))
+        Status=metrics.get('evaluation_status','completed'),
+        **{f'R@{k}':100*metrics['recalls'][str(k)] if metrics.get('recalls') else None for k in (1,5,10)}))
   model.cpu();del model,out;torch.cuda.empty_cache()
  if table:
   with (Path(args.output)/'summary.csv').open('w',newline='',encoding='utf-8-sig') as f:

@@ -2,7 +2,7 @@
 
 StableNight-SALAD 使用已有 DINOv2-S/14 和 SALAD-S 的 544D 描述子接口，新增轻量 patch 可靠性预测与动态 Dustbin。当前实现用于开展实验，**没有完成真实夜间数据集上的性能验证，也不代表已经证明优于 SALAD-S、MixVPR 或 CDND**。第一阶段没有引入真实夜间训练数据；真实夜间 Query 的提升仍需独立评测。
 
-推荐先运行 `stable_night_salad_day_aug_544.yaml`，只使用源白天图像和非生成式光照增强，关闭局部教师损失。之后分别比较生成式增强、局部监督和 Dustbin 开关，避免同时加入多个变化后无法判断收益来源。
+完整资源条件下，以 `stable_night_salad_day_aug_544.yaml` 作为四种模式比较的起点，只使用源白天图像和非生成式光照增强，关闭局部教师损失。当前工作区仍缺部分原始 RobotCar 训练图，可先审计独立的 `stable_night_salad_msls_svox_day_aug_544.yaml`，它的两数据集范围和 checkpoint 选择方式与原配置不同。之后分别比较生成式增强、局部监督和 Dustbin 开关，避免同时加入多个变化后无法判断收益来源。
 
 ## 已有实现与兼容边界
 
@@ -127,29 +127,35 @@ target = appearance * information * texture * valid_mask
 - `configs/experiments/students/stable_night_salad_day_fake_544.yaml`
 - `configs/experiments/students/stable_night_salad_day_aug_fake_544.yaml`
 
-局部实验另用 `stable_night_salad_day_aug_local_544.yaml`。这些配置沿用了旧 SALAD 配置中的数据和权重路径；`/home/admin123/diffusion_vpr_test/...` 路径来自迁移前环境。当前工作区检查中，源 manifest 文件存在，但配置指向的 RobotCar manifest/protocol、MSLS/SVOX/Tokyo 根目录和 DINOv2 repo/checkpoint 均不存在。运行前将路径改为真实资源，检查源 manifest 内部的路径也可访问。配置能够加载不等于数据和预训练权重已完整就绪。
+局部实验另用 `stable_night_salad_day_aug_local_544.yaml`。配置路径已迁移至当前工作区：MSLS/SVOX/Tokyo 位于 `/home/admin123/github/datasets`，DINOv2-S 仓库和权重使用已有 Torch Hub 缓存。源 manifest 文件存在；旧 CSV 内的已确认迁移路径通过读取时解析处理，保留原文件字节和 hash。旧自建 RobotCar 测试已退出活动代码与配置，`data.robotcar_seasons_root` 指向公共 Seasons，学生和参考模型共用标准 suite。原始 RobotCar 训练 manifest 保留，缺帧不会因测试替换而补齐。源图与生成图的完整可访问性仍需审计，详见 [资源迁移说明](resource_migration.md)。配置能够加载不等于完整训练与验证已经就绪。
 
-安装项目后使用已有 CLI。最小烟雾训练仍需要真实可访问的数据、预训练权重和验证集：
+当前可用的两数据集 profile 使用 `[msls,svox]`，每个 dataset 20,000 源图/epoch、合计 40,000，`selection_rule: fixed_budget_last`、`evaluate_epoch_zero: false`，不运行训练验证。原四份主配置及局部实验保留 dataset、预算和损失；需要验证选择的配置改用 `msls_day_val`（也可显式选择 `svox_day_val`），多个白天验证集按协议等权平均，任何 test 不参与 checkpoint 选择。请先运行 `audit-resources`，区分所选 profile 的训练资源和评测资源缺口。
+
+安装项目后使用已有 CLI。原三数据集配置的最小烟雾训练仍需要真实可访问的数据、预训练权重和验证集；当前机器可用 profile 的审计和训练命令见资源迁移说明：
 
 ```bash
 a2b-lightvpr train-vpr \
   --config configs/experiments/students/stable_night_salad_day_aug_544.yaml \
-  --smoke-epochs 1
+  --smoke-epochs 1 \
+  --set vpr.output_dir=runs/vpr/stable_night_salad_544/day_aug_publicval_seed0
 ```
 
-完整训练去掉 `--smoke-epochs 1`。冻结 backbone 可附加 `--set vpr.backbone_trainable_blocks=0`；局部监督关闭或 Dustbin 消融应使用新的 `vpr.output_dir`，避免覆盖已有实验。
+完整训练去掉 `--smoke-epochs 1`。此次验证配置变化后应使用新的输出目录；旧完整推理 checkpoint 仍可评测，但旧 VPR optimizer checkpoint 无法按新验证配置直接续训。冻结 backbone 可附加 `--set vpr.backbone_trainable_blocks=0`；局部监督关闭或 Dustbin 消融应使用新的 `vpr.output_dir`，避免覆盖已有实验。
+
+训练默认写入 `vpr.output_dir/tensorboard/`。在项目根目录另开终端运行 `tensorboard --logdir runs --port 6006`，浏览器打开 <http://localhost:6006>。除了损失和学习率，还记录各 view 的可靠性、Dustbin assignment、gamma 和 cluster mass 收敛诊断；MSLS/SVOX 的 `fixed_budget_last` profile 不运行训练验证，因此没有 recall 曲线。配置和恢复说明见 [TensorBoard 训练监控](training_monitoring.md)。
 
 `model_best.pt` 已经是推理 checkpoint，可直接用于评测和 benchmark；`checkpoints/latest.pt` 是包含 optimizer 等状态的训练 checkpoint。如需从 latest 导出，使用与训练一致的配置：
 
 ```bash
 a2b-lightvpr export-vpr-inference \
   --config configs/experiments/students/stable_night_salad_day_aug_544.yaml \
-  --training-checkpoint runs/vpr/stable_night_salad_544/day_aug_seed0/checkpoints/latest.pt \
-  --output runs/vpr/stable_night_salad_544/day_aug_seed0/model_last_inference.pt
+  --training-checkpoint runs/vpr/stable_night_salad_544/day_aug_publicval_seed0/checkpoints/latest.pt \
+  --output runs/vpr/stable_night_salad_544/day_aug_publicval_seed0/model_last_inference.pt \
+  --set vpr.output_dir=runs/vpr/stable_night_salad_544/day_aug_publicval_seed0
 
 a2b-lightvpr benchmark \
   --config configs/experiments/students/stable_night_salad_day_aug_544.yaml \
-  --checkpoint runs/vpr/stable_night_salad_544/day_aug_seed0/model_best.pt \
+  --checkpoint runs/vpr/stable_night_salad_544/day_aug_publicval_seed0/model_best.pt \
   --warmup 20 --iterations 100
 ```
 
@@ -157,20 +163,22 @@ a2b-lightvpr benchmark \
 
 ## Real Night Query → 两种 Database
 
-新 family 支持 `evaluation.database_domain: day` 或 `fake_night`，正常 Query 保持真实协议图像，ground truth 保持源 Database 的地点元数据。Fake Database 必须在评测前由用户准备，不自动调用生成器，不使用训练生成集替代测试 Database。
+新 family 支持 `evaluation.database_domain: day` 或 `fake_night`，正常 Query 保持真实协议图像。具备标签的协议沿用源 Database 的地点元数据；公共 Seasons 的未知真值保持未知，不因替换 Database 补出标签。Fake Database 必须在评测前由用户准备，不自动调用生成器，不使用训练生成集替代测试 Database。
+
+RobotCar 通过同一个 `evaluate-trained-suite` 入口选择 `robotcar_seasons_night` 或 `robotcar_seasons_day`，固定使用官方 v2 rear test；`evaluate-reference-suite` 也使用相同 key。Night 为 429 张 Query、Day 为 1,443 张 Query，Database 均为 6,954 张白天参考图。官方 test 真值隐藏，因此导出 Top-K，`recalls`、`mrr`、`valid_queries` 为 `null` 并记录无真值状态。旧自建测试入口、字段与解析已移除，完整使用说明见[公共 RobotCar Seasons](robotcar_seasons.md)。
 
 使用同一个推理 checkpoint，先评估真实夜间 Query → Day Database：
 
 ```bash
 a2b-lightvpr evaluate-trained-suite \
   --config configs/experiments/students/stable_night_salad_day_aug_544.yaml \
-  --checkpoint runs/vpr/stable_night_salad_544/day_aug_seed0/model_best.pt \
-  --datasets robotcar_project svox_night msls_night tokyo_night \
+  --checkpoint runs/vpr/stable_night_salad_544/day_aug_publicval_seed0/model_best.pt \
+  --datasets robotcar_seasons_night svox_night msls_night tokyo_night \
   --set evaluation.database_domain=day \
-  --set vpr.output_dir=runs/vpr/stable_night_salad_544/day_aug_seed0/eval_day
+  --set vpr.output_dir=runs/vpr/stable_night_salad_544/day_aug_publicval_seed0/eval_day
 ```
 
-`--datasets all` 还包含 Tokyo sunset；上面的四个协议明确选择真实夜间 Query。MSLS 使用既有 val 协议，其余依照已有 suite 协议，不改变 query 筛选或判定半径。
+`--datasets all` 运行上述四个夜间协议及 Tokyo Sunset；`all-day` 运行白天与白天验证组，`all-conditions` 运行两组。MSLS Night 使用既有公开 val，其余沿用各自 test 协议；这组显式 key 同时测量有标签的 MSLS/SVOX/Tokyo Recall 并导出 Seasons 无标签检索。
 
 Fake Database 映射通过 `evaluation.fake_database_manifest` 显式指定。CSV 必须包含 `source_path,generated_path`；`split` 可选，缺失或为空时适用于所有 split，提供时只选择与当前评测 split 相同的行。`dataset` 可作为元数据保留，匹配依据是规范化后的真实源路径；CSV 内相对路径相对于映射文件所在目录解析。映射必须完整覆盖所选评测协议的 Database，并提供可访问的生成图。同一源图的相同重复映射可接受，冲突映射、缺失映射、缺失文件或源图和生成图路径相同会报错。不同 Database 源图必须对应不同生成文件，生成文件路径不能是当前评测使用的任何真实 Database 或 Query 文件。替换函数仅改 Database 路径，并保持顺序和位姿元数据；Query 只用于检查映射冲突，保留原始路径。CSV 中未使用行不额外检查其角色。示例：
 
@@ -183,16 +191,16 @@ source_path,generated_path,split,dataset
 ```bash
 a2b-lightvpr evaluate-trained-suite \
   --config configs/experiments/students/stable_night_salad_day_aug_544.yaml \
-  --checkpoint runs/vpr/stable_night_salad_544/day_aug_seed0/model_best.pt \
-  --datasets robotcar_project svox_night msls_night tokyo_night \
+  --checkpoint runs/vpr/stable_night_salad_544/day_aug_publicval_seed0/model_best.pt \
+  --datasets robotcar_seasons_night svox_night msls_night tokyo_night \
   --set evaluation.database_domain=fake_night \
   --set evaluation.fake_database_manifest=data/evaluation/fake_database.csv \
-  --set vpr.output_dir=runs/vpr/stable_night_salad_544/day_aug_seed0/eval_fake_night
+  --set vpr.output_dir=runs/vpr/stable_night_salad_544/day_aug_publicval_seed0/eval_fake_night
 ```
 
 `data/evaluation/fake_database.csv` 是示例路径，仓库没有随原型提供测试生成图。测试 Database 的生成图只供评估，不能混入 `vpr_source_manifest` 或训练 generated manifest。报告中需要记录生成器/checkpoint、映射文件 hash、源 Database 数量与实际 Fake 数量，才能解释 Fake Database 的结果和生成器依赖。
 
-Day suite 写到 `vpr.output_dir/final_suite/`，Fake Night suite 写到其 `fake_night/` 子目录。StableNight 缓存校验包含 checkpoint、训练 manifest、Fake 映射 hash、head 设置、recall cutoffs，以及实际 Query/Database/地点判定协议指纹。协议发生变化时重新计算指标，不会只把旧结果的指纹改成新值；旧 family 的缓存行为保持原有含义。当前指纹不逐图计算内容 hash：若在同一路径替换图像字节却保留 CSV 和协议，需要使用新的评测 output directory 或清除相应 suite 缓存后重跑。
+Day suite 写到 `vpr.output_dir/final_suite/`，Fake Night suite 写到其 `fake_night/` 子目录，每项协议统一保存 `metrics.json` 并汇总到 `summary.json`。StableNight 缓存校验包含 checkpoint、训练 manifest、Fake 映射 hash、head 设置、recall cutoffs，以及实际 Query/Database/地点判定协议指纹。协议发生变化时重新计算指标，不会只把旧结果的指纹改成新值；旧 family 的缓存行为保持原有含义。当前指纹不逐图计算内容 hash：若在同一路径替换图像字节却保留 CSV 和协议，需要使用新的评测 output directory 或清除相应 suite 缓存后重跑。
 
 ## 分阶段验证与后续工作
 
@@ -204,8 +212,10 @@ Day suite 写到 `vpr.output_dir/final_suite/`，Fake Night suite 写到其 `fak
 4. 单独比较 Day/Aug 局部监督关闭与 `day_aug_local` 开启；不同时引入多层融合或 CDND。
 5. 与既有 SALAD-S 分类基线、MixVPR、CDND 比较时明确区分 loss 和数据预算；不要将新 family 的 Day/Aug 模式套用到旧实验并继续使用原标签。
 
-每组报告真实夜间 Query 的 R@1/5/10、有效 Query 数、Day/Fake Database 数、源图/view/optimizer step 预算、多个 seed 的方差、参数量、同硬件 AMP 推理 p50/p95、峰值显存，以及 reliability 均值/低分比例、Dustbin patch 分布、cluster mass 误差、有效 anchor 和有效局部 patch 数。静态结构保留、反射/车灯/动态车辆抑制等结论需要真实样例和定量证据，不能由 loss 值下降直接推出。
+有公开标签的协议分别报告真实夜间 Query 的 R@1/5/10、有效 Query 数；Seasons 仅报告无真值状态与实际排名。各组还需报告 Day/Fake Database 数、源图/view/optimizer step 预算、多个 seed 的方差、参数量、同硬件 AMP 推理 p50/p95、峰值显存，以及 reliability 均值/低分比例、Dustbin patch 分布、cluster mass 误差、有效 anchor 和有效局部 patch 数。静态结构保留、反射/车灯/动态车辆抑制等结论需要真实样例和定量证据，不能由 loss 值下降直接推出。
 
-训练的 `training_metrics.jsonl` 记录源图、view、optimizer step 和参考图像计数；`components_mean` 中记录启用损失的原始值、每个 view 的有效区域 reliability 均值、Dustbin 均值、cluster mass 最小值/最大偏差及 gamma。即使可靠性损失关闭，predictor 均值诊断仍保留。低分比例、空间分配图和语义类别分析仍需使用辅助输出单独统计。
+报告中的 `fixed_supervised_protocols_v2` 固定 Night 宏为 SVOX Night + Tokyo Night、Day 宏为 SVOX Day + SVOX Sun + Tokyo Day；Seasons 两项单列状态，不进入监督宏。宏中任一协议缺测，整个宏和配对差值为 `null`；图表排除该点并记录理由。旧测试和旧宏数值不能混入新定义。定性公共 Query 可以展示 Top-K，但不能标注正确/错误或正样本。
+
+训练的 `training_metrics.jsonl` 记录源图、view、optimizer step 和参考图像计数；`components_mean` 中记录启用损失的原始值、每个 view 的有效区域 reliability 均值、Dustbin 均值、cluster mass 最小值/最大偏差及 gamma。即使可靠性损失关闭，predictor 均值诊断仍保留。TensorBoard 还提供最多三张样例的 reliability／Dustbin 原生 patch 网格图及有效 patch 的直方图；这些图复用现有特征，不额外运行 backbone。低分比例、完整数据集的分布和语义类别分析仍需单独统计。
 
 第二阶段才研究第 6 层与第 12 层的轻量融合。第一版保留 `stable_feature_fusion: none` 配置位，启用其他值会被配置校验拒绝；目前没有实现或评估多层融合。待动态 Dustbin 独立消融明确后，再新增轻量投影、冻结/解冻策略和额外推理成本测量。

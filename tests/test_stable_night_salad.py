@@ -24,7 +24,7 @@ def stable_config(**kwargs):
         dataset_epoch_quotas={"msls": 8}, samples_per_epoch=8, datasets=("msls",),
         train_domains="day_aug",
     )
-    return ExperimentConfig(DataConfig("robot.csv", "protocol.json"), vpr=replace(cfg, **kwargs))
+    return ExperimentConfig(DataConfig(), vpr=replace(cfg, **kwargs))
 
 
 def test_scalar_transport_matches_legacy_and_constant_dynamic_bins():
@@ -129,7 +129,7 @@ def test_invalid_prototype_controls_fail(changes):
 
 def test_frozen_backbone_config_and_legacy_checkpoint_defaults():
     validate_config(stable_config(backbone_trainable_blocks=0))
-    legacy = ExperimentConfig(DataConfig("robot.csv", "protocol.json"))
+    legacy = ExperimentConfig(DataConfig())
     saved = legacy.as_dict()
     for name in list(saved["vpr"]):
         if name.startswith("stable_"):
@@ -230,7 +230,7 @@ def test_mixed_training_with_real_dataset_head_checkpoint_and_runtime(tmp_path, 
         selection_rule="fixed_budget_last", early_stopping=False, amp=False,
     )
     config = replace(config, data=DataConfig(
-        str(robot), str(protocol), vpr_source_manifest=str(tmp_path / "source.csv"),
+        vpr_source_manifest=str(tmp_path / "source.csv"),
         generated_root=str(generated),
     ))
     validate_config(config)

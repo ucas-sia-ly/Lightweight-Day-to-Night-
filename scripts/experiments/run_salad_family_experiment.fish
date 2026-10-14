@@ -47,8 +47,8 @@ function train_and_evaluate --argument-names config directory
 end
 
 command -s "$python_bin" >/dev/null; or die "missing interpreter: $python_bin"
-test -f /home/admin123/diffusion_vpr_test/reference_code/weights/dinov2_vits14_reg4_pretrain.pth; or die "missing DINOv2-S-Reg checkpoint"
-test -f /home/admin123/diffusion_vpr_test/reference_code/weights/dino_salad_512_32.ckpt; or die "missing SALAD-B checkpoint"
+test -f /home/admin123/.cache/torch/hub/checkpoints/dinov2_vits14_reg4_pretrain.pth; or die "missing DINOv2-S-Reg checkpoint"
+test -f /home/admin123/.cache/torch/hub/checkpoints/dino_salad_512_32.ckpt; or die "missing SALAD-B checkpoint"
 "$python_bin" -c 'import shutil, sys, torch; free=shutil.disk_usage(".").free/2**30; print(f"cuda={torch.cuda.is_available()}; free_disk={free:.1f} GiB"); sys.exit(0 if torch.cuda.is_available() and free >= 8 else 1)'; or die "CUDA and at least 8 GiB free disk are required"
 
 cli audit-data --config "$cdnd_config"; or exit 1
